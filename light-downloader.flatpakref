@@ -1,7 +1,7 @@
 [Flatpak Ref]
 Title=Light Downloader
 Name=io.github.Filipe_Vasconcelos_Batista.LightDownloader
-Branch=stable
+Branch=master
 Url=https://filipe-vasconcelos-batista.github.io/lightdownloader/repo/
 IsRuntime=false
 RuntimeRepo=https://dl.flathub.org/repo/flathub.flatpakrepo

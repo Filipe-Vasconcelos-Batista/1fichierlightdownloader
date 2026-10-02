@@ -11,7 +11,7 @@ Aplicação pequena que corre num container Docker e expõe um frontend simples 
 - Interface em Português e Inglês (botão PT/EN)
 - Downloads em paralelo (por defeito 2), com barra de progresso e velocidade
 - Retoma downloads interrompidos (ficheiros `.part`)
-- Subpasta de destino opcional
+- Escolhe a pasta de destino dentro da app (botão **Alterar**), com navegação e criação de pastas
 - A API key fica guardada num volume Docker, nunca no código nem no repositório
 
 ## Requisitos
@@ -53,7 +53,8 @@ Os ficheiros aparecem em `DOWNLOAD_DIR` (ou numa subpasta, se a indicares).
 
 | Variável | Onde | Descrição |
 |---|---|---|
-| `DOWNLOAD_DIR` | `.env` | Pasta do host onde os downloads são gravados (obrigatória) |
+| `DOWNLOAD_DIR` | `.env` | Pasta do host (obrigatória). É o destino por defeito dos downloads |
+| `SELECTABLE_DIR` | `.env` | Opcional. Pasta do host (ex.: `/home/o-teu-user` ou `/mnt/media`) dentro da qual podes escolher o destino na app, com o botão **Alterar**. Se ficar vazia, o botão não aparece e é usado sempre o `DOWNLOAD_DIR`. Dá ao container permissão de escrita nesta pasta: escolhe a mais estreita possível |
 | `FICHIER_API_KEY` | `.env` | API key do 1fichier (opcional; alternativa: introduzir no browser) |
 | `TMDB_API_KEY` | `.env` | Opcional: chave (v3 ou token v4) do TMDB, activa a pesquisa de nome/ano das séries |
 | `MAX_PARALLEL` | `docker-compose.yml` (`environment`) | Downloads em simultâneo (defeito: 2) |

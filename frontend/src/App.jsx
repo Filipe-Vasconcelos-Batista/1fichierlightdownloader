@@ -24,13 +24,13 @@ const seriesName = (f, g) => {
   return name
 }
 
-const finalPath = (f, g) => {
+const finalPath = (f, g, mode) => {
   const name = seriesName(f, g)
   const ext = f.filename.includes('.') ? f.filename.slice(f.filename.lastIndexOf('.')) : ''
   const code = f.season == null ? '' : `S${pad(f.season)}E${pad(f.episode)}`
   let file = f.filename || f.url
-  if (code && g.nameMode === 'episode') file = code + ext
-  else if (code && g.nameMode === 'series') file = `${name} ${code}${ext}`
+  if (code && mode === 'episode') file = code + ext
+  else if (code && mode === 'series') file = `${name} ${code}${ext}`
   if (!name) return file
   const folder = g.tmdbId && g.useTmdbId ? `${name} [tmdbid-${g.tmdbId}]` : name
   return f.season == null ? `${folder}/${file}` : `${folder}/Season ${pad(f.season)}/${file}`
@@ -38,6 +38,134 @@ const finalPath = (f, g) => {
 
 const formatSE = (f) =>
   f.season == null ? '' : `S${pad(f.season)}E${pad(f.episode)}`
+
+function HistoryModal({ t, onClose }) {
+  const [items, setItems] = useState(null)
+  const load = () => fetch('/api/history').then((r) => r.json()).then((j) => setItems(j.items))
+  useEffect(() => {
+    load()
+  }, [])
+  const remove = async (url) => {
+    await post('/api/history/remove', { url })
+    load()
+  }
+  const clear = async () => {
+    await post('/api/history/clear')
+    load()
+  }
+  return (
+    <div className="modal-bg" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <h3>{t.history}</h3>
+        {items && items.length === 0 && <p className="muted">{t.historyEmpty}</p>}
+        <ul className="dirs">
+          {(items || []).map((i) => (
+            <li key={i.url} className="hist">
+              <span>
+                {i.rel}
+                <br />
+                <span className="muted">{i.date}</span>
+              </span>
+              <button className="secondary" title={t.remove} onClick={() => remove(i.url)}>
+                ✕
+              </button>
+            </li>
+          ))}
+        </ul>
+        <div className="row end">
+          {items && items.length > 0 && (
+            <button className="secondary" onClick={clear}>
+              {t.clearHistory}
+            </button>
+          )}
+          <button onClick={onClose}>{t.close}</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function NameModeSelect({ value, onChange, t, disabled }) {
+  return (
+    <select value={value} disabled={disabled} onChange={(e) => onChange(e.target.value)}>
+      {Object.entries(t.nameModes).map(([k, label]) => (
+        <option key={k} value={k}>
+          {label}
+        </option>
+      ))}
+    </select>
+  )
+}
+
+function FolderPicker({ t, current, hostRoot, onClose, onPick }) {
+  const [path, setPath] = useState(current)
+  const [data, setData] = useState({ path: current, parent: null, dirs: [] })
+  const [error, setError] = useState('')
+  const [newName, setNewName] = useState('')
+
+  const load = async (p) => {
+    const r = await fetch(`/api/folders?path=${encodeURIComponent(p)}`)
+    const j = await r.json()
+    if (j.error) return setError(j.error)
+    setError('')
+    setPath(j.path)
+    setData(j)
+  }
+
+  useEffect(() => {
+    load(current)
+  }, [])
+
+  const mkdir = async () => {
+    if (!newName.trim()) return
+    const r = await post('/api/folders', { path, name: newName })
+    const j = await r.json()
+    if (j.error) return setError(j.error)
+    setNewName('')
+    load(j.path)
+  }
+
+  const full = `${hostRoot}${path ? '/' + path : ''}`
+
+  return (
+    <div className="modal-bg" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <h3>{t.chooseFolder}</h3>
+        <p className="muted path">{full}</p>
+        {error && <p className="err">{error}</p>}
+        <ul className="dirs">
+          {data.parent !== null && (
+            <li>
+              <button className="secondary" onClick={() => load(data.parent)}>
+                ⬆ ..
+              </button>
+            </li>
+          )}
+          {data.dirs.map((d) => (
+            <li key={d}>
+              <button className="secondary" onClick={() => load(path ? `${path}/${d}` : d)}>
+                📁 {d}
+              </button>
+            </li>
+          ))}
+          {data.dirs.length === 0 && <li className="muted">{t.noSubfolders}</li>}
+        </ul>
+        <div className="row">
+          <input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder={t.newFolder} onKeyDown={(e) => e.key === 'Enter' && mkdir()} />
+          <button className="secondary" onClick={mkdir}>
+            {t.create}
+          </button>
+        </div>
+        <div className="row end">
+          <button className="secondary" onClick={onClose}>
+            {t.close}
+          </button>
+          <button onClick={() => onPick(path)}>{t.useFolder}</button>
+        </div>
+      </div>
+    </div>
+  )
+}
 
 export default function App() {
   const [lang, setLang] = useState(initialLang)
@@ -47,6 +175,11 @@ export default function App() {
   const [text, setText] = useState('')
   const [folders, setFolders] = useState(false)
   const [groups, setGroups] = useState([])
+  const [active, setActive] = useState(0)
+  const [picking, setPicking] = useState(false)
+  const [showHistory, setShowHistory] = useState(false)
+  const [globalNames, setGlobalNames] = useState(true)
+  const [globalMode, setGlobalMode] = useState('original')
   const [listing, setListing] = useState(false)
   const [error, setError] = useState('')
   const [jobs, setJobs] = useState([])
@@ -84,7 +217,8 @@ export default function App() {
           setGroups([])
           setError(j.error)
         } else {
-          setGroups(j.groups.map((g) => ({ ...g, choice: 0, custom: '', year: '', nameMode: 'original', tmdbId: '', useTmdbId: true, tmdbResults: null })))
+          setActive(0)
+          setGroups(j.groups.map((g) => ({ ...g, sel: Object.fromEntries(g.files.filter((f) => !f.downloaded).map((f) => [f.url, true])), filter: '', touched: false, choice: 0, custom: '', year: '', nameMode: 'original', tmdbId: '', useTmdbId: false, tmdbResults: null })))
           setError('')
         }
       } catch (e) {
@@ -111,8 +245,34 @@ export default function App() {
     loadConfig()
   }
 
+  const pickDest = async (path) => {
+    const r = await post('/api/dest', { path })
+    const j = await r.json()
+    if (!j.error) {
+      setPicking(false)
+      loadConfig()
+    }
+  }
+
+  const resetDest = async () => {
+    await post('/api/dest', { reset: true })
+    loadConfig()
+  }
+
   const updateGroup = (i, patch) =>
-    setGroups((gs) => gs.map((g, k) => (k === i ? { ...g, ...patch } : g)))
+    setGroups((gs) => gs.map((g, k) => (k === i ? { ...g, ...patch, touched: true } : g)))
+
+  // Com um só grupo, ou com a opção geral ligada, o formato é o geral; senão, o de cada grupo
+  const useGlobal = globalNames || groups.length < 2
+  const nameModeOf = (g) => (useGlobal ? globalMode : g.nameMode)
+
+  const toggleGlobal = (on) => {
+    // ao desligar, cada grupo parte do formato geral que estava escolhido
+    if (!on) setGroups((gs) => gs.map((g) => ({ ...g, nameMode: globalMode })))
+    setGlobalNames(on)
+  }
+
+  const pending = groups.filter((g) => !g.touched).length
 
   const searchTmdb = async (i) => {
     const g = groups[i]
@@ -132,15 +292,31 @@ export default function App() {
     })
 
   const totalFiles = groups.reduce((n, g) => n + g.files.length, 0)
+  const selectedCount = groups.reduce((n, g) => n + g.files.filter((f) => g.sel[f.url]).length, 0)
+
+  // a seleção não conta como "opção definida" (não mexe no !)
+  const patchGroup = (i, patch) => setGroups((gs) => gs.map((g, k) => (k === i ? { ...g, ...patch } : g)))
+  const visibleFiles = (g) => {
+    const q = g.filter.trim().toLowerCase()
+    return q ? g.files.filter((f) => `${f.filename} ${formatSE(f)}`.toLowerCase().includes(q)) : g.files
+  }
+  const setSelected = (i, files, on) => {
+    const sel = { ...groups[i].sel }
+    files.forEach((f) => (on ? (sel[f.url] = true) : delete sel[f.url]))
+    patchGroup(i, { sel })
+  }
 
   const start = async () => {
     await post('/api/start', {
-      groups: groups.map((g) => ({
+      groups: groups
+        .map((g) => ({ ...g, files: g.files.filter((f) => g.sel[f.url]) }))
+        .filter((g) => g.files.length)
+        .map((g) => ({
         files: g.files,
         series: effectiveName(g),
         year: g.year,
         tmdb_id: g.useTmdbId ? g.tmdbId : '',
-        name_mode: g.nameMode,
+        name_mode: nameModeOf(g),
       })),
     })
     setText('')
@@ -157,6 +333,9 @@ export default function App() {
       <header>
         <h1>{t.title}</h1>
         <div className="lang">
+          <button className="secondary" onClick={() => setShowHistory(true)}>
+            {t.history}
+          </button>
           {['pt', 'en'].map((l) => (
             <button key={l} className={l === lang ? '' : 'secondary'} onClick={() => setLang(l)}>
               {l.toUpperCase()}
@@ -164,6 +343,8 @@ export default function App() {
           ))}
         </div>
       </header>
+
+      {showHistory && <HistoryModal t={t} onClose={() => setShowHistory(false)} />}
 
       {!cfg.from_env && (
         <div className="row">
@@ -175,6 +356,27 @@ export default function App() {
           />
           <button onClick={saveKey}>{t.save}</button>
         </div>
+      )}
+
+      <div className="row">
+        <span className="muted">
+          📁 {t.destination}: <b>{cfg.dest_label}</b>
+        </span>
+        {cfg.selectable && (
+          <>
+            <button className="secondary" onClick={() => setPicking(true)}>
+              {t.change}
+            </button>
+            {cfg.dest_rel != null && (
+              <button className="secondary" onClick={resetDest}>
+                {t.useDefault}
+              </button>
+            )}
+          </>
+        )}
+      </div>
+      {picking && (
+        <FolderPicker t={t} current={cfg.dest_rel || ''} hostRoot={cfg.selectable_root} onClose={() => setPicking(false)} onPick={pickDest} />
       )}
 
       <textarea
@@ -198,15 +400,58 @@ export default function App() {
 
       {totalFiles > 0 && (
         <p>
-          <b>{t.files(totalFiles)}</b> <button onClick={start}>{t.downloadAll}</button>
+          <b>{t.selectedOf(selectedCount, totalFiles)}</b>{' '}
+          <button onClick={start} disabled={selectedCount === 0}>
+            {t.downloadSelected}
+          </button>
+          {pending > 0 && <span className="muted"> <span className="badge">!</span> {t.pendingCount(pending)}</span>}
         </p>
       )}
 
-      {groups.map((g, i) => (
+      {groups.length > 0 && (
+        <div className="names global">
+          <b>{t.fileNames}</b>
+          <NameModeSelect value={globalMode} onChange={setGlobalMode} t={t} disabled={!useGlobal} />
+          {groups.length > 1 && (
+            <label className="muted">
+              <input type="checkbox" checked={globalNames} onChange={(e) => toggleGlobal(e.target.checked)} /> {t.sameForAll}
+            </label>
+          )}
+        </div>
+      )}
+
+      {groups.length > 1 && (
+        <div className="tabs" role="tablist">
+          {groups.map((g, i) => (
+            <button
+              key={i}
+              role="tab"
+              aria-selected={i === active}
+              className={i === active ? 'tab active' : 'tab'}
+              onClick={() => setActive(i)}
+              title={g.ref || effectiveName(g)}
+            >
+              <span className="tab-label">{effectiveName(g) || `${t.sources[g.kind]} ${i + 1}`}</span>
+              {!g.touched && (
+                <span className="badge" title={t.pending}>
+                  !
+                </span>
+              )}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {groups.map((g, i) => i !== active ? null : (
         <section key={i} className="group">
           <h3>
             {t.sources[g.kind]} {groups.length > 1 && g.kind !== 'folder' ? i + 1 : ''}
             {g.ref && <span className="muted"> {g.ref}</span>} <span className="muted">· {t.files(g.files.length)}</span>
+            {!g.touched && (
+              <button className="secondary confirm" onClick={() => updateGroup(i, {})}>
+                {t.confirm}
+              </button>
+            )}
           </h3>
 
           <div className="names">
@@ -240,13 +485,14 @@ export default function App() {
               onChange={(e) => updateGroup(i, { year: e.target.value.replace(/\D/g, '') })}
               placeholder={t.year}
             />
-            {cfg.has_tmdb ? (
-              <button className="secondary" onClick={() => searchTmdb(i)}>
-                {t.tmdbSearch}
-              </button>
-            ) : (
-              i === 0 && <span className="muted">{t.tmdbNoKey}</span>
-            )}
+            <button
+              className="secondary"
+              disabled={!cfg.has_tmdb}
+              title={cfg.has_tmdb ? '' : t.tmdbNoKey}
+              onClick={() => searchTmdb(i)}
+            >
+              {t.tmdbSearch}
+            </button>
             {g.tmdbId && (
               <label className="muted">
                 <input type="checkbox" checked={g.useTmdbId} onChange={(e) => updateGroup(i, { useTmdbId: e.target.checked })} />{' '}
@@ -269,20 +515,29 @@ export default function App() {
             </ul>
           )}
 
-          <div className="names">
-            <b>{t.fileNames}</b>
-            <select value={g.nameMode} onChange={(e) => updateGroup(i, { nameMode: e.target.value })}>
-              {Object.entries(t.nameModes).map(([k, label]) => (
-                <option key={k} value={k}>
-                  {label}
-                </option>
-              ))}
-            </select>
+          {!useGlobal && (
+            <div className="names">
+              <b>{t.fileNames}</b>
+              <NameModeSelect value={g.nameMode} onChange={(v) => updateGroup(i, { nameMode: v })} t={t} />
+            </div>
+          )}
+
+          <div className="row">
+            <input value={g.filter} onChange={(e) => patchGroup(i, { filter: e.target.value })} placeholder={t.filter} />
+            <span className="muted nowrap">{t.selectedOf(g.files.filter((f) => g.sel[f.url]).length, g.files.length)}</span>
           </div>
 
           <table>
             <thead>
               <tr>
+                <th>
+                  <input
+                    type="checkbox"
+                    title={t.selectAll}
+                    checked={visibleFiles(g).length > 0 && visibleFiles(g).every((f) => g.sel[f.url])}
+                    onChange={(e) => setSelected(i, visibleFiles(g), e.target.checked)}
+                  />
+                </th>
                 <th>{t.colName}</th>
                 <th>{t.colSE}</th>
                 <th>{t.colSize}</th>
@@ -290,12 +545,22 @@ export default function App() {
               </tr>
             </thead>
             <tbody>
-              {g.files.map((f) => (
+              {visibleFiles(g).map((f) => (
                 <tr key={f.url}>
-                  <td>{f.filename || f.url}</td>
+                  <td>
+                    <input type="checkbox" checked={!!g.sel[f.url]} onChange={(e) => setSelected(i, [f], e.target.checked)} />
+                  </td>
+                  <td>
+                    {f.filename || f.url}
+                    {f.downloaded && (
+                      <div className="muted">
+                        ✓ {t.alreadyDownloaded} ({f.downloaded_at})
+                      </div>
+                    )}
+                  </td>
                   <td>{formatSE(f)}</td>
                   <td className="muted nowrap">{formatSize(f.size)}</td>
-                  <td className="muted">{finalPath(f, g)}</td>
+                  <td className="muted">{finalPath(f, g, nameModeOf(g))}</td>
                 </tr>
               ))}
             </tbody>

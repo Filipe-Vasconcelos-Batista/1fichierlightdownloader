@@ -6,11 +6,16 @@ services:
     volumes:
       # Pasta do teu computador onde os ficheiros são gravados (definir em .env)
       - "${DOWNLOAD_DIR:?define DOWNLOAD_DIR no ficheiro .env}:/downloads"
+      # Opcional: raiz onde a app permite escolher o destino (SELECTABLE_DIR). Vazia = volume vazio e opção escondida
+      - "${SELECTABLE_DIR:-selectable-unused}:/selectable"
       - fichier-config:/config
     environment:
       FICHIER_API_KEY: "${FICHIER_API_KEY:-}"
       TMDB_API_KEY: "${TMDB_API_KEY:-}"
+      HOST_DOWNLOAD_DIR: "${DOWNLOAD_DIR}"
+      HOST_SELECTABLE_DIR: "${SELECTABLE_DIR:-}"
     restart: unless-stopped
 
 volumes:
   fichier-config:
+  selectable-unused:

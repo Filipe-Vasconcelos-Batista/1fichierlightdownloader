@@ -8,8 +8,10 @@ import uuid
 import requests
 from flask import Flask, jsonify, request, send_from_directory
 
-DOWNLOADS = "/downloads"
+DOWNLOADS = "/downloads"  # destino por defeito (DOWNLOAD_DIR)
+SELECTABLE = "/selectable"  # raiz opcional navegável na app (SELECTABLE_DIR)
 CONFIG = "/config/config.json"
+HISTORY = "/config/history.json"
 API = "https://api.1fichier.com/v1"
 UA = "Mozilla/5.0 (X11; Linux x86_64) Gecko/20100101 Firefox/130.0"
 ACTIVE = ("queued", "getting_link", "downloading")
@@ -33,6 +35,61 @@ def save_cfg(c):
     with open(CONFIG, "w") as f:
         json.dump(c, f)
     os.chmod(CONFIG, 0o600)
+
+
+def selectable_enabled():
+    return bool(os.environ.get("HOST_SELECTABLE_DIR", "").strip())
+
+
+def resolve_dir(rel):
+    """Caminho dentro de /selectable; recusa tudo o que saia dessa raiz."""
+    root = os.path.realpath(SELECTABLE)
+    p = os.path.realpath(os.path.join(root, (rel or "").strip("/")))
+    if p != root and not p.startswith(root + os.sep):
+        raise ValueError("Pasta fora da raiz permitida")
+    return p
+
+
+def rel_dir(p):
+    r = os.path.relpath(p, os.path.realpath(SELECTABLE))
+    return "" if r == "." else r
+
+
+def current_dest():
+    """(caminho no container, rótulo no host) do destino em vigor."""
+    rel = load_cfg().get("dest")  # None = destino por defeito
+    if rel is not None and selectable_enabled():
+        host = os.environ["HOST_SELECTABLE_DIR"].rstrip("/")
+        return resolve_dir(rel), host + ("/" + rel if rel else "")
+    return DOWNLOADS, os.environ.get("HOST_DOWNLOAD_DIR", DOWNLOADS)
+
+
+def require_selectable():
+    if not selectable_enabled():
+        raise ValueError("Seleção de pastas desativada (SELECTABLE_DIR não definida)")
+
+
+def load_history():
+    try:
+        with open(HISTORY) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def save_history(h):
+    os.makedirs(os.path.dirname(HISTORY), exist_ok=True)
+    with open(HISTORY, "w") as f:
+        json.dump(h, f)
+
+
+def record_history(job, dest):
+    """Guarda um download concluído: url -> {filename, path (no container), rel (no destino), date}."""
+    with lock:
+        h = load_history()
+        h[job["url"]] = {"filename": job["filename"], "path": dest, "rel": os.path.relpath(dest, job["dest"]),
+                         "size": job["size"], "date": time.strftime("%Y-%m-%d %H:%M")}
+        save_history(h)
 
 
 def get_key():
@@ -141,14 +198,24 @@ def parse_groups(text, folders=False):
 
 
 SERIES_RE = re.compile(r"^(.*?)[\s._-]+S(\d{1,2})E(\d{1,3})", re.I)
+ALT_RE = re.compile(r"^(.*?)[\s._-]+(\d{1,2})x(\d{2,3})\b", re.I)  # Nome 1x05
+ABS_RE = re.compile(r"^(.*?)\s+-\s+(\d{1,3})(?:v\d+)?\s+-\s+")  # Nome - 05 - Título (numeração contínua)
 
 
 def parse_episode(filename):
-    """'Título.S02E05...' -> ('Título', 2, 5); sem padrão -> ('', None, None)."""
-    m = SERIES_RE.match(filename or "")
-    if not m:
-        return "", None, None
-    return safe_name(re.sub(r"[._]+", " ", m.group(1)).strip()), int(m.group(2)), int(m.group(3))
+    """'Título.S02E05...' / 'Título 2x05' / 'Título - 05 - ...' -> ('Título', temporada, episódio).
+    Sem temporada no nome assume-se a 1. Sem padrão -> ('', None, None)."""
+    fn = filename or ""
+    m = SERIES_RE.match(fn) or ALT_RE.match(fn)
+    if m:
+        season, ep = int(m.group(2)), int(m.group(3))
+    else:
+        m = ABS_RE.match(fn)
+        if not m:
+            return "", None, None
+        season, ep = 1, int(m.group(2))
+    title = re.sub(r"^(\[[^\]]*\]\s*)+", "", m.group(1))  # tira [grupo] no início
+    return safe_name(re.sub(r"[._]+", " ", title).strip()), season, ep
 
 
 def describe_group(group):
@@ -234,7 +301,7 @@ def run_job(job):
             if j.get("status") != "OK":
                 raise RuntimeError(j.get("message", "Erro ao obter link"))
             job["status"] = "downloading"
-            dest = os.path.join(DOWNLOADS, target_folder(job["filename"], job["series"], job["year"], job["tmdb_id"]),
+            dest = os.path.join(job["dest"], target_folder(job["filename"], job["series"], job["year"], job["tmdb_id"]),
                                 target_filename(job["filename"], job["series"], job["year"], job["name_mode"]))
             os.makedirs(os.path.dirname(dest), exist_ok=True)
             part = dest + ".part"
@@ -259,6 +326,7 @@ def run_job(job):
                         job["done"] = done
                         job["speed"] = (done - base) / max(time.time() - t0, 0.001)
             os.replace(part, dest)
+            record_history(job, dest)
             job["status"] = "done"
         except Exception as e:
             job["status"] = "error"
@@ -273,7 +341,10 @@ def index():
 @app.get("/api/config")
 def get_config():
     return jsonify(has_key=bool(get_key()), from_env=bool(os.environ.get("FICHIER_API_KEY", "").strip()),
-                   has_tmdb=bool(os.environ.get("TMDB_API_KEY", "").strip()))
+                   has_tmdb=bool(os.environ.get("TMDB_API_KEY", "").strip()),
+                   dest_label=current_dest()[1], selectable=selectable_enabled(),
+                   selectable_root=os.environ.get("HOST_SELECTABLE_DIR", "").rstrip("/"),
+                   dest_rel=load_cfg().get("dest") if selectable_enabled() else None)
 
 
 @app.post("/api/config")
@@ -284,10 +355,83 @@ def set_config():
     return jsonify(ok=True)
 
 
+@app.get("/api/folders")
+def api_folders():
+    try:
+        require_selectable()
+        p = resolve_dir(request.args.get("path", ""))
+        dirs = sorted((d for d in os.listdir(p) if not d.startswith(".") and os.path.isdir(os.path.join(p, d))),
+                      key=str.lower)
+        rel = rel_dir(p)
+        return jsonify(path=rel, parent=None if not rel else rel_dir(os.path.dirname(p)), dirs=dirs)
+    except Exception as e:
+        return jsonify(error=str(e)), 400
+
+
+@app.post("/api/folders")
+def api_mkdir():
+    try:
+        require_selectable()
+        p = os.path.join(resolve_dir(request.json.get("path", "")), safe_name(request.json.get("name", "")))
+        resolve_dir(rel_dir(os.path.realpath(p)))
+        os.makedirs(p, exist_ok=True)
+        return jsonify(path=rel_dir(os.path.realpath(p)))
+    except Exception as e:
+        return jsonify(error=str(e)), 400
+
+
+@app.post("/api/dest")
+def api_dest():
+    """{path} escolhe uma pasta dentro de SELECTABLE_DIR; {reset: true} volta ao destino por defeito."""
+    try:
+        c = load_cfg()
+        if request.json.get("reset"):
+            c.pop("dest", None)
+        else:
+            require_selectable()
+            p = resolve_dir(request.json.get("path", ""))
+            if not os.path.isdir(p):
+                raise ValueError("Pasta inexistente")
+            c["dest"] = rel_dir(p)
+        save_cfg(c)
+        return jsonify(ok=True)
+    except Exception as e:
+        return jsonify(error=str(e)), 400
+
+
+@app.get("/api/history")
+def api_history():
+    h = load_history()
+    items = [dict(url=u, **{k: v[k] for k in ("filename", "rel", "date")}) for u, v in h.items()]
+    return jsonify(items=sorted(items, key=lambda i: i["date"], reverse=True))
+
+
+@app.post("/api/history/remove")
+def api_history_remove():
+    with lock:
+        h = load_history()
+        h.pop(request.json.get("url", ""), None)
+        save_history(h)
+    return jsonify(ok=True)
+
+
+@app.post("/api/history/clear")
+def api_history_clear():
+    with lock:
+        save_history({})
+    return jsonify(ok=True)
+
+
 @app.post("/api/list")
 def api_list():
     try:
         groups = parse_groups(request.json["text"], request.json.get("folders", False))
+        hist = load_history()
+        for g in groups:
+            for f in g["files"]:  # só conta como descarregado se o ficheiro ainda existir
+                h = hist.get(f["url"])
+                f["downloaded"] = bool(h and os.path.exists(h["path"]))
+                f["downloaded_at"] = h["date"] if f["downloaded"] else ""
         return jsonify(groups=[describe_group(g) for g in groups])
     except Exception as e:
         return jsonify(error=str(e)), 400
@@ -307,6 +451,7 @@ def api_tmdb():
 
 @app.post("/api/start")
 def api_start():
+    dest = current_dest()[0]
     for g in request.json["groups"]:
         series = (g.get("series") or "").strip()
         year = g.get("year") or ""
@@ -317,7 +462,7 @@ def api_start():
         for f in g["files"]:
             job = dict(id=uuid.uuid4().hex[:8], url=f["url"], filename=f["filename"], size=f.get("size", 0),
                        done=0, speed=0, status="queued", error="", series=series, year=year,
-                       tmdb_id=tmdb_id, name_mode=name_mode)
+                       tmdb_id=tmdb_id, name_mode=name_mode, dest=dest)
             with lock:
                 jobs[job["id"]] = job
             threading.Thread(target=run_job, args=(job,), daemon=True).start()

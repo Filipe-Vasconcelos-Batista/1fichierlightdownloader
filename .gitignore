@@ -10,3 +10,9 @@ dist/
 config/*
 !config/.gitkeep
 !config/settings.example.yaml
+
+# Flatpak: ficheiros gerados na construção
+.flatpak-builder/
+build-flatpak/
+flatpak/stage/
+flatpak/out/

@@ -1,6 +1,7 @@
 # Copyright (c) 2026 Filipe Vasconcelos Batista <filipevbatista1@gmail.com>
 # Licensed under the PolyForm Noncommercial License 1.0.0 (see LICENSE).
 import copy
+import hmac
 import datetime
 import json
 import os
@@ -23,6 +24,8 @@ CONFIG = os.path.join(CONFIG_DIR, "config.json")
 HISTORY = os.path.join(CONFIG_DIR, "history.json")
 USAGE = os.path.join(CONFIG_DIR, "usage.json")
 SPEED_HISTORY = os.path.join(CONFIG_DIR, "speed_history.json")
+# App de ambiente de trabalho (Flatpak/nativo): o destino escolhe-se com o diálogo de pastas do sistema
+NATIVE = os.environ.get("LD_NATIVE") == "1"
 PERIODS = ("day", "week", "month", "year")
 GIB = 1024 ** 3
 FR = ZoneInfo("Europe/Paris")  # a API do 1fichier indica que as datas são na hora de França
@@ -32,6 +35,27 @@ ACTIVE = ("queued", "getting_link", "downloading", "paused")
 RUNNING = ("queued", "getting_link", "downloading")
 
 app = Flask(__name__, static_folder="static", static_url_path="")
+
+# Janela de ambiente de trabalho: o servidor só atende quem tiver o segredo deste arranque (cookie) e só em localhost.
+# Impede que páginas abertas no browser falem com ele (incluindo ataques de DNS rebinding, que mudam o nome do servidor).
+TOKEN = os.environ.get("LD_TOKEN", "")
+
+
+@app.before_request
+def guard():
+    if not TOKEN:
+        return None
+    if request.host.rsplit(":", 1)[0] not in ("127.0.0.1", "localhost"):
+        return "Forbidden", 403
+    given = request.args.get("token") or request.cookies.get("ld") or ""
+    return None if hmac.compare_digest(given, TOKEN) else ("Forbidden", 403)
+
+
+@app.after_request
+def remember_token(resp):
+    if TOKEN and request.args.get("token") == TOKEN:
+        resp.set_cookie("ld", TOKEN, httponly=True, samesite="Strict")
+    return resp
 jobs = {}  # id -> dict
 lock = threading.Lock()
 queue_order = []  # ids dos downloads, de cima para baixo: é a ordem em que arrancam
@@ -367,8 +391,24 @@ def rel_dir(p):
     return "" if r == "." else r
 
 
+def set_dest_abs(path):
+    """Modo nativo: guarda uma pasta absoluta como destino (escolhida no diálogo do sistema)."""
+    if not NATIVE:
+        raise ValueError("Só disponível na aplicação de ambiente de trabalho")
+    p = os.path.realpath(path)
+    if not os.path.isdir(p) or not os.access(p, os.W_OK | os.X_OK):
+        raise ValueError(f"Não consigo gravar em {p}")
+    c = load_cfg()
+    c["dest_abs"] = p
+    save_cfg(c)
+    return p
+
+
 def current_dest():
-    """(caminho no container, rótulo no host) do destino em vigor."""
+    """(caminho onde se grava, rótulo para mostrar) do destino em vigor."""
+    if NATIVE:
+        p = load_cfg().get("dest_abs")
+        return (p, p) if p else (DOWNLOADS, DOWNLOADS)
     rel = load_cfg().get("dest")  # None = destino por defeito
     if rel is not None and selectable_enabled():
         host = os.environ["HOST_SELECTABLE_DIR"].rstrip("/")
@@ -975,7 +1015,9 @@ def get_config():
     return jsonify(has_key=bool(get_key()), has_tmdb=bool(get_tmdb_key()),
                    dest_label=current_dest()[1], selectable=selectable_enabled(),
                    selectable_root=os.environ.get("HOST_SELECTABLE_DIR", "").rstrip("/"),
-                   dest_rel=load_cfg().get("dest") if selectable_enabled() else None)
+                   dest_rel=load_cfg().get("dest") if selectable_enabled() else None,
+                   native=NATIVE, dest_custom=bool(NATIVE and load_cfg().get("dest_abs")),
+                   dest_missing=not os.path.isdir(current_dest()[0]))
 
 
 @app.get("/api/usage")
@@ -1108,6 +1150,10 @@ def api_dest():
         c = load_cfg()
         if request.json.get("reset"):
             c.pop("dest", None)
+            c.pop("dest_abs", None)
+        elif "abs" in request.json:
+            set_dest_abs(request.json["abs"])
+            return jsonify(ok=True)
         else:
             require_selectable()
             p = resolve_dir(request.json.get("path", ""))
@@ -1173,6 +1219,8 @@ def api_tmdb():
 @app.post("/api/start")
 def api_start():
     dest = current_dest()[0]
+    if not os.path.isdir(dest):  # nunca grava noutro sítio sem avisar (ex.: disco externo desligado)
+        return jsonify(error=f"A pasta de destino não está disponível: {dest}"), 409
     for g in request.json["groups"]:
         series = (g.get("series") or "").strip()
         year = g.get("year") or ""

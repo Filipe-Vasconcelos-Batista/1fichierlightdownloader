@@ -415,3 +415,28 @@ td.drag {
 .brand img {
   border-radius: 10px;
 }
+
+/* Controlos nativos (menus, caixas, barras de scroll) seguem o tema claro/escuro */
+:root {
+  color-scheme: light dark;
+}
+/* O WebKit do GTK desenha o menu com o aspecto nativo e ignora o fundo: tira-lhe o aspecto nativo */
+select {
+  appearance: none;
+  -webkit-appearance: none;
+  background-color: var(--bg);
+  color: var(--fg);
+  padding-right: 30px;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'><path d='M1 1l5 5 5-5' fill='none' stroke='%239aa3af' stroke-width='2'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+}
+select option {
+  background-color: var(--bg);
+  color: var(--fg);
+}
+/* a explicação por baixo de um campo fica numa linha à parte */
+.field > .muted.small {
+  display: block;
+  margin-top: 4px;
+}

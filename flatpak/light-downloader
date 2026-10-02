@@ -1,0 +1,2 @@
+#!/bin/sh
+exec python3 /app/share/light-downloader/desktop.py "$@"

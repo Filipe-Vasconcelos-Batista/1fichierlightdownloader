@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Light Downloader
+Comment=Download many 1fichier files at once and organise them for your media library
+Comment[pt]=Descarrega muitos ficheiros do 1fichier de uma vez e organiza-os para a tua biblioteca de vídeo
+Exec=light-downloader
+Icon=io.github.Filipe_Vasconcelos_Batista.LightDownloader
+Terminal=false
+Categories=Network;FileTransfer;GTK;
+Keywords=download;downloader;1fichier;jellyfin;series;queue;
+Keywords[pt]=descarregar;transferir;1fichier;jellyfin;séries;fila;
+StartupNotify=true

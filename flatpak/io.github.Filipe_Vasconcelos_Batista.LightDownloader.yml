@@ -1,0 +1,38 @@
+# Manifest do Flatpak do Light Downloader.
+# Constrói-se com: flatpak/build.sh  (prepara o frontend e corre o flatpak-builder)
+app-id: io.github.Filipe_Vasconcelos_Batista.LightDownloader
+runtime: org.gnome.Platform
+runtime-version: '50'
+sdk: org.gnome.Sdk
+command: light-downloader
+
+# Permissões da sandbox. É uma aplicação local: só fala com o 1fichier, o TMDB e o ipinfo.io (rede)
+# e com o servidor interno em 127.0.0.1 (não aceita ligações de fora).
+finish-args:
+  - --share=network
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+  # Para gravar os downloads onde quiseres: a tua pasta pessoal e os discos externos
+  - --filesystem=home
+  - --filesystem=/media
+  - --filesystem=/run/media
+
+modules:
+  # Flask, requests, PyYAML e dependências, como wheels com hash (gerado por flatpak/update-deps.py)
+  - python-deps.json
+
+  - name: light-downloader
+    buildsystem: simple
+    build-commands:
+      # a aplicação: backend (main.py), janela (desktop.py) e o frontend já compilado (static/)
+      - install -d /app/share/light-downloader
+      - cp -r stage/. /app/share/light-downloader/
+      - install -Dm755 light-downloader /app/bin/light-downloader
+      - install -Dm644 ${FLATPAK_ID}.desktop /app/share/applications/${FLATPAK_ID}.desktop
+      - install -Dm644 ${FLATPAK_ID}.metainfo.xml /app/share/metainfo/${FLATPAK_ID}.metainfo.xml
+      - for s in 512 256 128 64 48 32; do install -Dm644 icons/${FLATPAK_ID}-$s.png /app/share/icons/hicolor/${s}x${s}/apps/${FLATPAK_ID}.png; done
+    sources:
+      - type: dir
+        path: .

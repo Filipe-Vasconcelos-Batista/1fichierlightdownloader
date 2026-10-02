@@ -8,6 +8,9 @@ const post = (url, body = {}) =>
     body: JSON.stringify(body),
   })
 
+// Para consumos: zero é zero (formatSize devolve '?' para tamanhos desconhecidos)
+const formatUsed = (n) => (n ? formatSize(n) : '0 MB')
+
 const formatSize = (n) =>
   !n ? '?' : n >= 1073741824 ? `${(n / 1073741824).toFixed(2)} GB` : `${(n / 1048576).toFixed(1)} MB`
 
@@ -247,7 +250,7 @@ function SettingsModal({ t, onClose, onSaved }) {
               <span className="muted small">{t.quotaNote}</span>
               <br />
               <span className="muted">
-                {t.usedIn[quotaPeriod]}: {formatSize(s.usage.used)} ·{' '}
+                {t.usedIn[quotaPeriod]}: {formatUsed(s.usage.used)} ·{' '}
                 <button className="link" onClick={resetUsage}>
                   {t.resetCounter}
                 </button>
@@ -417,6 +420,9 @@ function FolderPicker({ t, current, hostRoot, onClose, onPick }) {
   )
 }
 
+// Dentro da janela de ambiente de trabalho (Flatpak), o Python expõe este canal para abrir o diálogo de pastas do sistema
+const nativeBridge = () => window.webkit?.messageHandlers?.chooseFolder
+
 export default function App() {
   const [lang, setLang] = useState(initialLang)
   const t = messages[lang]
@@ -447,6 +453,9 @@ export default function App() {
 
   useEffect(() => {
     loadConfig()
+    if (location.hash === '#settings') setShowSettings(true)
+    window.addEventListener('ld-dest-changed', loadConfig)
+    return () => window.removeEventListener('ld-dest-changed', loadConfig)
   }, [])
 
   useEffect(() => {
@@ -647,6 +656,9 @@ export default function App() {
     if (started.ok) {
       setText('')
       setView('downloads')
+    } else {
+      const j = await started.json().catch(() => ({}))
+      setError(j.error || `HTTP ${started.status}`) // ex.: o destino não está disponível
     }
   }
 
@@ -694,6 +706,11 @@ export default function App() {
       {showSettings && <SettingsModal t={t} onClose={() => setShowSettings(false)} onSaved={loadConfig} />}
       {showHistory && <HistoryModal t={t} onClose={() => setShowHistory(false)} />}
 
+      {cfg.dest_missing && (
+        <div className="row warn bad">
+          <span>⛔ {t.destMissing(cfg.dest_label)}</span>
+        </div>
+      )}
       {limits?.api?.tripped && (
         <div className="row warn bad">
           <span>⛔ {t.apiTripped(limits.api.limit)}</span>
@@ -728,12 +745,12 @@ export default function App() {
         <span className="muted">
           📁 {t.destination}: <b>{cfg.dest_label}</b>
         </span>
-        {cfg.selectable && (
+        {(cfg.selectable || (cfg.native && nativeBridge())) && (
           <>
-            <button className="secondary" onClick={() => setPicking(true)}>
+            <button className="secondary" onClick={() => (cfg.native ? nativeBridge().postMessage('') : setPicking(true))}>
               {t.change}
             </button>
-            {cfg.dest_rel != null && (
+            {(cfg.native ? cfg.dest_custom : cfg.dest_rel != null) && (
               <button className="secondary" onClick={resetDest}>
                 {t.useDefault}
               </button>
@@ -989,7 +1006,7 @@ export default function App() {
       {usage && (usage.limit > 0 || usage.used > 0) && (
         <div className={usage.exceeded ? 'usage warn' : 'usage'}>
           <span className="muted">
-            {t.usedIn[usage.period]}: <b>{formatSize(usage.used)}</b>
+            {t.usedIn[usage.period]}: <b>{formatUsed(usage.used)}</b>
             {usage.limit > 0 && ` / ${formatSize(usage.limit)}`}
           </span>
           {usage.limit > 0 && (

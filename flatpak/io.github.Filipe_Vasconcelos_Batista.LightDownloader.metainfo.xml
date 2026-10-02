@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.Filipe_Vasconcelos_Batista.LightDownloader</id>
+  <name>Light Downloader</name>
+  <summary>Download many 1fichier files at once and organise them for your media library</summary>
+  <summary xml:lang="pt">Descarrega muitos ficheiros do 1fichier de uma vez e organiza-os para a tua biblioteca de vídeo</summary>
+  <developer id="io.github.filipe-vasconcelos-batista">
+    <name>Filipe Vasconcelos Batista</name>
+  </developer>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>PolyForm-Noncommercial-1.0.0</project_license>
+  <description>
+    <p>
+      Light Downloader downloads whole lists of files from 1fichier in one go, using your own Premium account and API key.
+      Paste a shared-folder link, a JSON export or a list of links, pick the episodes you want, and it downloads them in
+      an ordered queue and files each one into folders by show and season, named so Jellyfin and other media servers
+      recognise them straight away.
+    </p>
+    <ul>
+      <li>Reads 1fichier folder links, JSON exports and plain lists of links, even hundreds of episodes at once</li>
+      <li>Organises files as Show (Year)/Season 01, with optional TMDB lookup for the name and year</li>
+      <li>Ordered queue with drag and drop, pause, resume and retry, and a history so nothing is downloaded twice</li>
+      <li>Speed, data, disk space and API request limits, plus time-left estimates</li>
+      <li>Light and dark themes, in English and Portuguese</li>
+    </ul>
+    <p>
+      Unofficial project, not affiliated with 1fichier or TMDB. A 1fichier Premium account is required. For personal,
+      non-commercial use. This product uses the TMDB API but is not endorsed or certified by TMDB.
+    </p>
+    <p xml:lang="pt">
+      O Light Downloader descarrega listas inteiras de ficheiros do 1fichier de uma só vez, com a tua própria conta
+      Premium e a tua API key. Cola um link de pasta, um JSON ou uma lista de links, escolhe os episódios que queres, e
+      ele descarrega-os numa fila ordenada e arruma cada um em pastas por série e temporada, com nomes que o Jellyfin e
+      outros servidores de vídeo reconhecem logo.
+    </p>
+    <ul xml:lang="pt">
+      <li xml:lang="pt">Lê links de pastas do 1fichier, JSONs e listas de links, mesmo centenas de episódios de uma vez</li>
+      <li xml:lang="pt">Organiza em Série (Ano)/Season 01, com pesquisa opcional no TMDB para o nome e o ano</li>
+      <li xml:lang="pt">Fila ordenada com arrastar e largar, pausa, retoma e repetir, e um histórico para nunca descarregar duas vezes</li>
+      <li xml:lang="pt">Limites de velocidade, de dados, de espaço em disco e de pedidos à API, e estimativa do tempo que falta</li>
+      <li xml:lang="pt">Temas claro e escuro, em português e inglês</li>
+    </ul>
+    <p xml:lang="pt">
+      Projecto não oficial, sem relação com o 1fichier nem com o TMDB. É preciso uma conta 1fichier Premium. Para uso
+      pessoal e não comercial. Este produto usa a API do TMDB mas não é por ele endossado nem certificado.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.github.Filipe_Vasconcelos_Batista.LightDownloader.desktop</launchable>
+  <url type="homepage">https://github.com/Filipe-Vasconcelos-Batista/lightdownloader</url>
+  <url type="bugtracker">https://github.com/Filipe-Vasconcelos-Batista/lightdownloader/issues</url>
+  <content_rating type="oars-1.1"/>
+  <provides>
+    <binary>light-downloader</binary>
+  </provides>
+  <requires>
+    <display_length compare="ge">600</display_length>
+  </requires>
+  <supports>
+    <control>pointing</control>
+    <control>keyboard</control>
+  </supports>
+  <releases>
+    <release version="1.0.0" date="2026-10-02"/>
+  </releases>
+</component>

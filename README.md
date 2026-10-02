@@ -21,7 +21,9 @@ A small app that runs in a Docker container and opens a web interface to downloa
 **Downloading**
 - Choose which files to download: a checkbox per file and a filter (`S02`, `E05`, name…)
 - **History**: files already downloaded are marked with ✓ and unchecked by default
-- Parallel downloads with progress, speed and a cancel button
+- Parallel downloads with progress, speed, pause/resume and a cancel button
+- Optional global speed limit (MB/s), set in **Settings (⚙)**
+- Optional data limit per day, week, month or year: downloads pause when it is reached and resume on their own when the period renews
 - Resumes interrupted downloads (`.part` files)
 - Default destination folder, or one chosen inside the app (optional, see [Configuration](#configuration))
 
@@ -61,7 +63,7 @@ To update later: `git pull` and `docker compose up -d --build`.
 ## Usage
 
 1. Open <http://localhost:8080>
-2. If you did not set `FICHIER_API_KEY` in `.env`, paste the key and click **Save** (the field only appears in that case)
+2. If you did not set `FICHIER_API_KEY` in `.env`, open **Settings (⚙)**, paste your 1fichier API key and save (a warning bar reminds you while it is missing)
 3. Paste the folder link, the JSON or the list of links. The list appears on its own
 4. For each group (tab), check the folder name, the year (you can use **Search TMDB**) and the file name format. An orange **!** marks groups you have not reviewed yet
 5. Tick the files you want and click **Download selected**
@@ -70,17 +72,22 @@ Files end up in the destination, organised as `Series (Year)/Season NN/`.
 
 ## Configuration
 
-All variables go in `.env`.
+All variables go in `.env`. The API keys and the number of simultaneous downloads are optional there: you can enter and change them any time in **Settings (⚙)**. A value saved in the app takes priority over the `.env` one.
 
 | Variable | Required | Description |
 |---|---|---|
 | `DOWNLOAD_DIR` | yes | Folder on your computer where downloads are saved by default |
-| `FICHIER_API_KEY` | no | 1fichier API key. If empty, you enter it in the browser |
-| `TMDB_API_KEY` | no | TMDB key (v3 key or v4 token). Enables the **Search TMDB** button |
+| `FICHIER_API_KEY` | no | Initial 1fichier API key. You can also set or change it in **Settings (⚙)** |
+| `TMDB_API_KEY` | no | Initial TMDB key (v3 key or v4 token). Enables the **Search TMDB** button. Can also be set in **Settings (⚙)** |
 | `SELECTABLE_DIR` | no | Folder on your computer (e.g. `/home/your-user` or `/mnt/media`) inside which you can pick the destination in the app with the **Change** button. If empty, the button is hidden and `DOWNLOAD_DIR` is always used |
-| `MAX_PARALLEL` | no | Simultaneous downloads (default: 2) |
+| `TZ` | no | Your time zone (e.g. `Europe/Lisbon`), only used if you choose "My local time" for the data limit. Default: UTC |
+| `MAX_PARALLEL` | no | Initial number of simultaneous downloads (default: 2). Can also be changed in **Settings (⚙)** |
 
 About `SELECTABLE_DIR`: it gives the container write access to that folder, so choose the narrowest one possible. The app can only browse inside it.
+
+## Data limit
+
+In **Settings (⚙)** you can set a limit in GB per day, week (starting Monday), month or year. The app counts the bytes **this app** downloads (it cannot see other traffic on your PC or what 1fichier records on your account), so treat it as a brake, not an official meter. When the limit is reached, all downloads pause and resume on their own when the period renews or if you raise the limit. You can change the period at any time: usage is stored per day, so the count adjusts. By default the day changes at midnight **French time** (the 1fichier API states its dates are in CET/CEST); you can switch to your own time (`TZ` in `.env`). 1fichier's API does not expose when the traffic quota renews, so for a monthly limit you can set the day of the month the period starts on, to match the renewal date shown in your account.
 
 ## Stored data
 

@@ -85,6 +85,167 @@ function HistoryModal({ t, onClose }) {
   )
 }
 
+function KeyField({ label, hint, info, t, value, onChange, onRemove }) {
+  const status = { app: t.keyFromApp, env: t.keyFromEnv, none: t.keyNone }[info.source]
+  return (
+    <div className="field">
+      <label>
+        <b>{label}</b> <span className="muted">{hint}</span>
+      </label>
+      <div className="row">
+        <input
+          type="password"
+          autoComplete="off"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={info.set ? t.keyReplaceHint : ''}
+        />
+        {info.source === 'app' && (
+          <button className="secondary" onClick={onRemove}>
+            {t.removeKey}
+          </button>
+        )}
+      </div>
+      <span className={info.set ? 'muted' : 'err'}>{status}</span>
+    </div>
+  )
+}
+
+function SettingsModal({ t, onClose, onSaved }) {
+  const [s, setS] = useState(null)
+  const [fichierKey, setFichierKey] = useState('')
+  const [tmdbKey, setTmdbKey] = useState('')
+  const [maxParallel, setMaxParallel] = useState(2)
+  const [speedLimit, setSpeedLimit] = useState(0)
+  const [quotaGb, setQuotaGb] = useState(0)
+  const [quotaPeriod, setQuotaPeriod] = useState('month')
+  const [quotaClock, setQuotaClock] = useState('fichier')
+  const [quotaDay, setQuotaDay] = useState(1)
+
+  const load = () =>
+    fetch('/api/settings').then((r) => r.json()).then((j) => {
+      setS(j)
+      setMaxParallel(j.max_parallel)
+      setSpeedLimit(j.speed_limit)
+      setQuotaGb(j.quota_gb)
+      setQuotaPeriod(j.quota_period)
+      setQuotaClock(j.quota_clock)
+      setQuotaDay(j.quota_day)
+    })
+  useEffect(() => {
+    load()
+  }, [])
+
+  const remove = async (field) => {
+    await post('/api/settings', { [field]: '' })
+    await load()
+    onSaved()
+  }
+
+  const resetUsage = async () => {
+    await post('/api/usage/reset')
+    load()
+  }
+
+  const save = async () => {
+    const body = { max_parallel: maxParallel, speed_limit: speedLimit, quota_gb: quotaGb, quota_period: quotaPeriod, quota_clock: quotaClock, quota_day: quotaDay }
+    if (fichierKey.trim()) body.fichier_api_key = fichierKey
+    if (tmdbKey.trim()) body.tmdb_api_key = tmdbKey
+    await post('/api/settings', body)
+    onSaved()
+    onClose()
+  }
+
+  return (
+    <div className="modal-bg" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <h3>{t.settings}</h3>
+        {s && (
+          <>
+            <KeyField
+              label={t.fichierKey}
+              hint={t.fichierKeyHint}
+              info={s.fichier}
+              t={t}
+              value={fichierKey}
+              onChange={setFichierKey}
+              onRemove={() => remove('fichier_api_key')}
+            />
+            <KeyField
+              label={t.tmdbKey}
+              hint={t.tmdbKeyHint}
+              info={s.tmdb}
+              t={t}
+              value={tmdbKey}
+              onChange={setTmdbKey}
+              onRemove={() => remove('tmdb_api_key')}
+            />
+            <div className="field">
+              <label>
+                <b>{t.speedLimit}</b> <span className="muted">{t.speedLimitHint}</span>
+              </label>
+              <div className="row">
+                <input type="number" min="0" step="0.5" className="year" value={speedLimit} onChange={(e) => setSpeedLimit(e.target.value)} />
+                <span className="muted">MB/s</span>
+              </div>
+            </div>
+            <div className="field">
+              <label>
+                <b>{t.quota}</b> <span className="muted">{t.quotaHint}</span>
+              </label>
+              <div className="row">
+                <input type="number" min="0" step="1" className="year" value={quotaGb} onChange={(e) => setQuotaGb(e.target.value)} />
+                <span className="muted">GB</span>
+                <select value={quotaPeriod} onChange={(e) => setQuotaPeriod(e.target.value)}>
+                  {Object.entries(t.periods).map(([k, label]) => (
+                    <option key={k} value={k}>
+                      {label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="row">
+                <select value={quotaClock} onChange={(e) => setQuotaClock(e.target.value)}>
+                  <option value="fichier">{t.clockFichier}</option>
+                  <option value="local">{t.clockLocal}</option>
+                </select>
+                {quotaPeriod === 'month' && (
+                  <>
+                    <span className="muted">{t.monthStartsOn}</span>
+                    <input type="number" min="1" max="28" className="year" value={quotaDay} onChange={(e) => setQuotaDay(e.target.value)} />
+                  </>
+                )}
+              </div>
+              <span className="muted small">{t.quotaNote}</span>
+              <br />
+              <span className="muted">
+                {t.usedIn[quotaPeriod]}: {formatSize(s.usage.used)} ·{' '}
+                <button className="link" onClick={resetUsage}>
+                  {t.resetCounter}
+                </button>
+              </span>
+            </div>
+            <div className="field">
+              <label>
+                <b>{t.maxParallel}</b>
+              </label>
+              <div className="row">
+                <input type="number" min="1" max="10" className="year" value={maxParallel} onChange={(e) => setMaxParallel(e.target.value)} />
+              </div>
+            </div>
+          </>
+        )}
+        <div className="row end">
+          <button className="secondary" onClick={onClose}>
+            {t.close}
+          </button>
+          <button onClick={save}>{t.save}</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function NameModeSelect({ value, onChange, t, disabled }) {
   return (
     <select value={value} disabled={disabled} onChange={(e) => onChange(e.target.value)}>
@@ -170,8 +331,9 @@ function FolderPicker({ t, current, hostRoot, onClose, onPick }) {
 export default function App() {
   const [lang, setLang] = useState(initialLang)
   const t = messages[lang]
-  const [cfg, setCfg] = useState({ has_key: false, from_env: false })
-  const [key, setKey] = useState('')
+  const [cfg, setCfg] = useState({})
+  const [showSettings, setShowSettings] = useState(false)
+  const [usage, setUsage] = useState(null)
   const [text, setText] = useState('')
   const [folders, setFolders] = useState(false)
   const [groups, setGroups] = useState([])
@@ -231,19 +393,19 @@ export default function App() {
   }, [text, folders])
 
   useEffect(() => {
+    const tick = () => fetch('/api/usage').then((r) => r.json()).then(setUsage).catch(() => {})
+    tick()
+    const iv = setInterval(tick, 3000)
+    return () => clearInterval(iv)
+  }, [])
+
+  useEffect(() => {
     const tick = () =>
       fetch('/api/jobs').then((r) => r.json()).then(setJobs).catch(() => {})
     tick()
     const iv = setInterval(tick, 1000)
     return () => clearInterval(iv)
   }, [])
-
-  const saveKey = async () => {
-    if (!key) return
-    await post('/api/config', { api_key: key })
-    setKey('')
-    loadConfig()
-  }
 
   const pickDest = async (path) => {
     const r = await post('/api/dest', { path })
@@ -348,6 +510,9 @@ export default function App() {
           <button className="secondary" onClick={() => setShowHistory(true)}>
             {t.history}
           </button>
+          <button className="secondary icon" title={t.settings} onClick={() => setShowSettings(true)}>
+            ⚙
+          </button>
           {['pt', 'en'].map((l) => (
             <button key={l} className={l === lang ? '' : 'secondary'} onClick={() => setLang(l)}>
               {l.toUpperCase()}
@@ -356,17 +521,13 @@ export default function App() {
         </div>
       </header>
 
+      {showSettings && <SettingsModal t={t} onClose={() => setShowSettings(false)} onSaved={loadConfig} />}
       {showHistory && <HistoryModal t={t} onClose={() => setShowHistory(false)} />}
 
-      {!cfg.from_env && (
-        <div className="row">
-          <input
-            type="password"
-            value={key}
-            onChange={(e) => setKey(e.target.value)}
-            placeholder={cfg.has_key ? t.apiKeySaved : t.apiKey}
-          />
-          <button onClick={saveKey}>{t.save}</button>
+      {cfg.has_key === false && (
+        <div className="row warn">
+          <span>⚠ {t.missingKey}</span>
+          <button onClick={() => setShowSettings(true)}>{t.openSettings}</button>
         </div>
       )}
 
@@ -583,6 +744,20 @@ export default function App() {
       ))}
 
       <h2>{t.downloads}</h2>
+      {usage && (usage.limit > 0 || usage.used > 0) && (
+        <div className={usage.exceeded ? 'usage warn' : 'usage'}>
+          <span className="muted">
+            {t.usedIn[usage.period]}: <b>{formatSize(usage.used)}</b>
+            {usage.limit > 0 && ` / ${formatSize(usage.limit)}`}
+          </span>
+          {usage.limit > 0 && (
+            <div className="bar">
+              <i style={{ width: `${Math.min(100, (usage.used / usage.limit) * 100)}%` }} />
+            </div>
+          )}
+          {usage.exceeded && <span>⚠ {t.quotaReached(usage.resets)}</span>}
+        </div>
+      )}
       <table>
         <tbody>
           {jobs.map((j) => {
@@ -596,7 +771,7 @@ export default function App() {
                   </div>
                 </td>
                 <td className="muted">
-                  {t.status[j.status] ?? j.status}
+                  {j.status === 'paused' && j.paused_by === 'quota' ? t.status.paused_quota : (t.status[j.status] ?? j.status)}
                   {j.error && <span className="err"> {j.error}</span>}
                   <br />
                   {formatSize(j.done)} / {formatSize(j.size)}

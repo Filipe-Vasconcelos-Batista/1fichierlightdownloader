@@ -283,3 +283,41 @@ button:disabled {
   font-size: 13px;
   line-height: 1.4;
 }
+.field {
+  margin: 14px 0;
+}
+.field .row {
+  margin: 6px 0 2px;
+}
+.field .row input[type='password'] {
+  flex: 1;
+}
+.warn {
+  justify-content: space-between;
+  padding: 8px 12px;
+  border: 1px solid #f59e0b;
+  border-radius: 6px;
+}
+.year[type='number'] {
+  width: 90px;
+}
+.usage {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 10px;
+  max-width: 420px;
+}
+.usage.warn {
+  color: #f59e0b;
+}
+button.link {
+  background: none;
+  color: var(--accent);
+  border: 0;
+  padding: 0;
+  text-decoration: underline;
+}
+.small {
+  font-size: 12px;
+}

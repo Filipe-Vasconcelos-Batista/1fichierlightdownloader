@@ -21,7 +21,9 @@ Aplicação pequena que corre num container Docker e abre uma interface no brows
 **Descarregar**
 - Escolhe os ficheiros a descarregar: caixas por ficheiro e um filtro (`S02`, `E05`, nome…)
 - **Histórico**: os ficheiros já descarregados aparecem marcados com ✓ e desmarcados por defeito
-- Downloads em paralelo, com progresso, velocidade e botão de cancelar
+- Downloads em paralelo, com progresso, velocidade, pausa/retoma e botão de cancelar
+- Limite de velocidade global opcional (MB/s), nas **Definições (⚙)**
+- Limite de dados opcional por dia, semana, mês ou ano: os downloads pausam ao atingi-lo e retomam sozinhos quando o período renova
 - Retoma downloads interrompidos (ficheiros `.part`)
 - Pasta de destino por defeito, ou escolhida na app (opcional, ver [Configuração](#configuração))
 
@@ -61,7 +63,7 @@ Para actualizar mais tarde: `git pull` e `docker compose up -d --build`.
 ## Utilização
 
 1. Abre <http://localhost:8080>
-2. Se não definiste `FICHIER_API_KEY` no `.env`, cola a key e clica em **Guardar** (o campo só aparece nesse caso)
+2. Se não definiste `FICHIER_API_KEY` no `.env`, abre as **Definições (⚙)**, cola a tua API key do 1fichier e guarda (uma barra de aviso lembra-te enquanto faltar)
 3. Cola o link da pasta, o JSON ou a lista de links. A lista aparece sozinha
 4. Por cada grupo (separador), confirma o nome da pasta, o ano (podes usar **Pesquisar no TMDB**) e o formato dos nomes dos ficheiros. Um **!** laranja assinala os grupos ainda por rever
 5. Marca os ficheiros que queres e clica em **Descarregar selecionados**
@@ -70,17 +72,22 @@ Os ficheiros ficam no destino, organizados em `Série (Ano)/Season NN/`.
 
 ## Configuração
 
-Todas as variáveis vão no `.env`.
+Todas as variáveis vão no `.env`. As API keys e o número de downloads em simultâneo são opcionais aí: podes introduzi-los e alterá-los quando quiseres em **Definições (⚙)**. Um valor guardado na app tem prioridade sobre o do `.env`.
 
 | Variável | Obrigatória | Descrição |
 |---|---|---|
 | `DOWNLOAD_DIR` | sim | Pasta do teu computador onde os downloads são gravados por defeito |
-| `FICHIER_API_KEY` | não | API key do 1fichier. Se ficar vazia, introduzes no browser |
-| `TMDB_API_KEY` | não | Chave (v3 ou token v4) do TMDB. Activa o botão **Pesquisar no TMDB** |
+| `FICHIER_API_KEY` | não | API key inicial do 1fichier. Também a podes definir ou alterar em **Definições (⚙)** |
+| `TMDB_API_KEY` | não | Chave inicial (v3 ou token v4) do TMDB. Activa o botão **Pesquisar no TMDB**. Também em **Definições (⚙)** |
 | `SELECTABLE_DIR` | não | Pasta do computador (ex.: `/home/o-teu-user` ou `/mnt/media`) dentro da qual podes escolher o destino na app, com o botão **Alterar**. Se ficar vazia, o botão não aparece e é usado sempre o `DOWNLOAD_DIR` |
-| `MAX_PARALLEL` | não | Downloads em simultâneo (defeito: 2) |
+| `TZ` | não | O teu fuso horário (ex.: `Europe/Lisbon`), só usado se escolheres "A minha hora" no limite de dados. Defeito: UTC |
+| `MAX_PARALLEL` | não | Número inicial de downloads em simultâneo (defeito: 2). Também em **Definições (⚙)** |
 
 Sobre `SELECTABLE_DIR`: dá ao container permissão de escrita nessa pasta, por isso escolhe a mais estreita possível. Na app só consegues navegar dentro dela.
+
+## Limite de dados
+
+Nas **Definições (⚙)** podes definir um limite em GB por dia, semana (a começar à segunda), mês ou ano. A app conta os bytes que **esta app** descarrega (não vê o resto do tráfego do PC nem o que o 1fichier regista na conta), por isso serve de travão e não de contador oficial. Ao atingir o limite, todos os downloads pausam e retomam sozinhos quando o período renova ou se aumentares o limite. Podes mudar o período quando quiseres: o consumo é guardado por dia, por isso a contagem ajusta-se. Por defeito o dia muda à meia-noite **de França** (a API do 1fichier indica que as datas são em CET/CEST); podes mudar para a tua hora (`TZ` no `.env`). A API do 1fichier não indica quando a quota de tráfego renova, por isso, num limite mensal, podes definir o dia do mês em que o período começa, para coincidir com a data de renovação que a tua conta mostra.
 
 ## Dados guardados
 

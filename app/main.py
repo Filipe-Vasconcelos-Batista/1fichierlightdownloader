@@ -1,19 +1,27 @@
 # Copyright (c) 2026 Filipe Vasconcelos Batista <filipevbatista1@gmail.com>
 # Licensed under the PolyForm Noncommercial License 1.0.0 (see LICENSE).
+import datetime
 import json
 import os
 import re
 import threading
 import time
 import uuid
+from zoneinfo import ZoneInfo
 
 import requests
 from flask import Flask, jsonify, request, send_from_directory
 
-DOWNLOADS = "/downloads"  # destino por defeito (DOWNLOAD_DIR)
-SELECTABLE = "/selectable"  # raiz opcional navegável na app (SELECTABLE_DIR)
-CONFIG = "/config/config.json"
-HISTORY = "/config/history.json"
+# Caminhos: no Docker são os do container; fora dele (Flatpak, nativo) definem-se por variáveis de ambiente
+DOWNLOADS = os.environ.get("LD_DOWNLOADS", "/downloads")  # destino por defeito
+SELECTABLE = os.environ.get("LD_SELECTABLE", "/selectable")  # raiz opcional navegável na app
+CONFIG_DIR = os.environ.get("LD_CONFIG_DIR", "/config")  # definições e histórico
+CONFIG = os.path.join(CONFIG_DIR, "config.json")
+HISTORY = os.path.join(CONFIG_DIR, "history.json")
+USAGE = os.path.join(CONFIG_DIR, "usage.json")
+PERIODS = ("day", "week", "month", "year")
+GIB = 1024 ** 3
+FR = ZoneInfo("Europe/Paris")  # a API do 1fichier indica que as datas são na hora de França
 API = "https://api.1fichier.com/v1"
 UA = "Mozilla/5.0 (X11; Linux x86_64) Gecko/20100101 Firefox/130.0"
 ACTIVE = ("queued", "getting_link", "downloading", "paused")
@@ -22,7 +30,51 @@ RUNNING = ("queued", "getting_link", "downloading")
 app = Flask(__name__, static_folder="static", static_url_path="")
 jobs = {}  # id -> dict
 lock = threading.Lock()
-sem = threading.Semaphore(int(os.environ.get("MAX_PARALLEL", "2")))
+
+
+class Slots:
+    """Limite de downloads em simultâneo que pode mudar em execução (ao contrário de um Semaphore)."""
+
+    def __init__(self):
+        self.cv = threading.Condition()
+        self.n = 0
+
+    def __enter__(self):
+        with self.cv:
+            self.cv.wait_for(lambda: self.n < get_max_parallel())
+            self.n += 1
+
+    def __exit__(self, *exc):
+        with self.cv:
+            self.n -= 1
+            self.cv.notify_all()
+
+
+sem = Slots()
+
+
+class Throttle:
+    """Limite de velocidade global. Cada bloco reserva o seu intervalo de tempo num relógio partilhado,
+    por isso a soma de todos os downloads em simultâneo respeita o limite."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.next = time.monotonic()
+
+    def wait(self, nbytes):
+        limit = get_speed_limit()  # bytes/s; 0 = sem limite
+        if not limit:
+            return
+        with self.lock:
+            now = time.monotonic()
+            self.next = min(max(self.next, now), now + 1)  # não acumula atrasos se o limite mudar
+            delay = self.next - now
+            self.next += nbytes / limit
+        if delay > 0:
+            time.sleep(delay)
+
+
+throttle = Throttle()
 
 
 def load_cfg():
@@ -86,6 +138,138 @@ def save_history(h):
         json.dump(h, f)
 
 
+def quota_today():
+    """O dia que conta para a quota: por defeito o de França (como o 1fichier); ou o do container (TZ)."""
+    if load_cfg().get("quota_clock") == "local":
+        return datetime.date.today()
+    return datetime.datetime.now(FR).date()
+
+
+def month_anchor():
+    """Dia do mês em que o 'mês' começa (1-28), para acompanhar a data de renovação da conta."""
+    try:
+        return max(1, min(28, int(load_cfg().get("quota_day") or 1)))
+    except ValueError:
+        return 1
+
+
+def period_start(period, today=None):
+    d = today or quota_today()
+    if period == "day":
+        return d
+    if period == "week":
+        return d - datetime.timedelta(days=d.weekday())  # segunda-feira
+    if period == "month":
+        a = month_anchor()
+        if d.day >= a:
+            return d.replace(day=a)
+        return (d.replace(day=1) - datetime.timedelta(days=1)).replace(day=a)
+    return d.replace(month=1, day=1)
+
+
+def next_period_start(period, start):
+    if period == "day":
+        return start + datetime.timedelta(days=1)
+    if period == "week":
+        return start + datetime.timedelta(days=7)
+    if period == "month":
+        return (start.replace(day=28) + datetime.timedelta(days=4)).replace(day=month_anchor())
+    return start.replace(year=start.year + 1)
+
+
+class Usage:
+    """Bytes descarregados por esta app, guardados por dia. Assim o período (dia/semana/mês/ano)
+    pode mudar a qualquer momento: soma-se apenas os dias que pertencem ao período em vigor."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.saved = time.monotonic()
+        try:
+            with open(USAGE) as f:
+                self.days = json.load(f)
+        except Exception:
+            self.days = {}
+
+    def add(self, nbytes):
+        with self.lock:
+            k = quota_today().isoformat()
+            self.days[k] = self.days.get(k, 0) + nbytes
+            if time.monotonic() - self.saved > 5:
+                self._save()
+
+    def used(self, period):
+        start = period_start(period).isoformat()
+        with self.lock:
+            return sum(v for k, v in self.days.items() if k >= start)
+
+    def _save(self):
+        cutoff = (quota_today() - datetime.timedelta(days=400)).isoformat()
+        self.days = {k: v for k, v in self.days.items() if k >= cutoff}
+        os.makedirs(CONFIG_DIR, exist_ok=True)
+        with open(USAGE, "w") as f:
+            json.dump(self.days, f)
+        self.saved = time.monotonic()
+
+    def flush(self):
+        with self.lock:
+            self._save()
+
+    def reset(self):
+        with self.lock:
+            self.days = {}
+            self._save()
+
+
+usage = Usage()
+
+
+def get_quota():
+    """(limite em bytes, período). Limite 0 = sem limite."""
+    c = load_cfg()
+    period = c.get("quota_period") if c.get("quota_period") in PERIODS else "month"
+    try:
+        return int(float(c.get("quota_gb") or 0) * GIB), period
+    except ValueError:
+        return 0, period
+
+
+def quota_exceeded():
+    limit, period = get_quota()
+    return limit > 0 and usage.used(period) >= limit
+
+
+def quota_info():
+    limit, period = get_quota()
+    start = period_start(period)
+    return {"period": period, "limit": limit, "used": usage.used(period),
+            "since": start.isoformat(), "resets": next_period_start(period, start).isoformat(),
+            "exceeded": limit > 0 and usage.used(period) >= limit}
+
+
+def quota_pause_all():
+    """Limite atingido: pausa tudo o que está ativo ou na fila (retoma sozinho quando houver margem)."""
+    with lock:
+        for j in jobs.values():
+            if j["status"] in RUNNING:
+                j["status"], j["paused_by"], j["speed"] = "paused", "quota", 0
+                j["gen"] += 1
+
+
+def quota_tick():
+    """Guarda o contador e retoma o que a quota tinha pausado, se já houver margem."""
+    usage.flush()
+    if not quota_exceeded():
+        for j in list(jobs.values()):
+            if j["status"] == "paused" and j.get("paused_by") == "quota":
+                resume_job(j)
+
+
+def quota_watcher():
+    while True:
+        time.sleep(20)
+        quota_tick()
+
+
 def record_history(job, dest):
     """Guarda um download concluído: url -> {filename, path (no container), rel (no destino), date}."""
     with lock:
@@ -95,8 +279,37 @@ def record_history(job, dest):
         save_history(h)
 
 
+def setting(name, env):
+    """Valor guardado na app; se não houver, o do ambiente (.env) serve de valor inicial."""
+    return (load_cfg().get(name) or "").strip() or os.environ.get(env, "").strip()
+
+
+def setting_source(name, env):
+    return "app" if (load_cfg().get(name) or "").strip() else "env" if os.environ.get(env, "").strip() else "none"
+
+
 def get_key():
-    return os.environ.get("FICHIER_API_KEY", "").strip() or load_cfg().get("api_key", "")
+    return setting("api_key", "FICHIER_API_KEY")
+
+
+def get_tmdb_key():
+    return setting("tmdb_key", "TMDB_API_KEY")
+
+
+def get_speed_limit():
+    """Limite em bytes/s (definido em MB/s). 0 = sem limite."""
+    try:
+        mbps = float(load_cfg().get("speed_limit") or 0)
+    except ValueError:
+        return 0
+    return int(max(0.0, min(mbps, 10000.0)) * 1_000_000)
+
+
+def get_max_parallel():
+    try:
+        return max(1, min(10, int(load_cfg().get("max_parallel") or os.environ.get("MAX_PARALLEL") or 2)))
+    except ValueError:
+        return 2
 
 
 def safe_name(n):
@@ -269,9 +482,9 @@ def target_filename(filename, series="", year="", mode="original"):
 
 
 def tmdb_get(path, **params):
-    key = os.environ.get("TMDB_API_KEY", "").strip()
+    key = get_tmdb_key()
     if not key:
-        raise RuntimeError("TMDB_API_KEY não definida")
+        raise RuntimeError("Chave do TMDB não definida (Definições)")
     headers = {"Authorization": f"Bearer {key}"} if key.startswith("eyJ") else {}
     if not headers:
         params["api_key"] = key
@@ -293,6 +506,9 @@ def advance(job, gen, status):
 
 def run_job(job, gen):
     with sem:
+        if quota_exceeded():
+            quota_pause_all()
+            return
         if not advance(job, gen, "getting_link"):
             return
         try:
@@ -330,13 +546,18 @@ def run_job(job, gen):
                 job["size"] = total or job["size"]
                 t0, base = time.time(), done
                 with open(part, "ab" if done else "wb") as f:
-                    for chunk in d.iter_content(1 << 20):
+                    for chunk in d.iter_content(1 << 18):
+                        throttle.wait(len(chunk))
                         if job["gen"] != gen or job["status"] == "canceled":
                             return  # pausado ou cancelado: o .part fica para retomar
                         f.write(chunk)
                         done += len(chunk)
                         job["done"] = done
                         job["speed"] = (done - base) / max(time.time() - t0, 0.001)
+                        usage.add(len(chunk))
+                        if quota_exceeded():
+                            quota_pause_all()
+                            return
             os.replace(part, dest)
             record_history(job, dest)
             job["status"] = "done"
@@ -352,18 +573,83 @@ def index():
 
 @app.get("/api/config")
 def get_config():
-    return jsonify(has_key=bool(get_key()), from_env=bool(os.environ.get("FICHIER_API_KEY", "").strip()),
-                   has_tmdb=bool(os.environ.get("TMDB_API_KEY", "").strip()),
+    return jsonify(has_key=bool(get_key()), has_tmdb=bool(get_tmdb_key()),
                    dest_label=current_dest()[1], selectable=selectable_enabled(),
                    selectable_root=os.environ.get("HOST_SELECTABLE_DIR", "").rstrip("/"),
                    dest_rel=load_cfg().get("dest") if selectable_enabled() else None)
 
 
-@app.post("/api/config")
-def set_config():
-    c = load_cfg()
-    c["api_key"] = request.json.get("api_key", "").strip()
+@app.get("/api/usage")
+def api_usage():
+    return jsonify(quota_info())
+
+
+@app.post("/api/usage/reset")
+def api_usage_reset():
+    usage.reset()
+    return jsonify(ok=True)
+
+
+@app.get("/api/settings")
+def get_settings():
+    """Nunca devolve as chaves, só se existem e de onde vêm (app ou .env)."""
+    return jsonify(fichier={"set": bool(get_key()), "source": setting_source("api_key", "FICHIER_API_KEY")},
+                   tmdb={"set": bool(get_tmdb_key()), "source": setting_source("tmdb_key", "TMDB_API_KEY")},
+                   max_parallel=get_max_parallel(), speed_limit=get_speed_limit() / 1_000_000,
+                   quota_gb=get_quota()[0] / GIB, quota_period=get_quota()[1], usage=quota_info(),
+                   quota_clock=load_cfg().get("quota_clock", "fichier"), quota_day=month_anchor())
+
+
+@app.post("/api/settings")
+def set_settings():
+    """Só altera o que vier no pedido. Texto vazio numa chave apaga o valor da app (volta a valer o .env)."""
+    body, c = request.json, load_cfg()
+    for field, name in (("fichier_api_key", "api_key"), ("tmdb_api_key", "tmdb_key")):
+        if field in body:
+            value = (body[field] or "").strip()
+            if value:
+                c[name] = value
+            else:
+                c.pop(name, None)
+    if "speed_limit" in body:
+        try:
+            mbps = float(body["speed_limit"] or 0)
+        except (TypeError, ValueError):
+            return jsonify(error="speed_limit inválido"), 400
+        if mbps > 0:
+            c["speed_limit"] = min(mbps, 10000.0)
+        else:
+            c.pop("speed_limit", None)  # 0 ou vazio = sem limite
+    if "quota_gb" in body:
+        try:
+            gb = float(body["quota_gb"] or 0)
+        except (TypeError, ValueError):
+            return jsonify(error="quota_gb inválido"), 400
+        if gb > 0:
+            c["quota_gb"] = gb
+        else:
+            c.pop("quota_gb", None)
+    if "quota_period" in body:
+        if body["quota_period"] not in PERIODS:
+            return jsonify(error="quota_period inválido"), 400
+        c["quota_period"] = body["quota_period"]
+    if "quota_clock" in body:
+        if body["quota_clock"] not in ("fichier", "local"):
+            return jsonify(error="quota_clock inválido"), 400
+        c["quota_clock"] = body["quota_clock"]
+    if "quota_day" in body:
+        try:
+            c["quota_day"] = max(1, min(28, int(body["quota_day"])))
+        except (TypeError, ValueError):
+            return jsonify(error="quota_day inválido"), 400
+    if "max_parallel" in body:
+        try:
+            c["max_parallel"] = max(1, min(10, int(body["max_parallel"])))
+        except (TypeError, ValueError):
+            return jsonify(error="max_parallel inválido"), 400
     save_cfg(c)
+    with sem.cv:
+        sem.cv.notify_all()  # se o limite subiu, os downloads em espera arrancam já
     return jsonify(ok=True)
 
 
@@ -489,7 +775,7 @@ def api_jobs():
 def pause_job(job):
     with lock:
         if job["status"] in RUNNING:
-            job["status"] = "paused"
+            job["status"], job["paused_by"] = "paused", "user"
             job["gen"] += 1  # a thread atual para no próximo bloco
             job["speed"] = 0
 
@@ -498,7 +784,7 @@ def resume_job(job):
     with lock:
         if job["status"] != "paused":
             return
-        job["status"], job["error"] = "queued", ""
+        job["status"], job["error"], job["paused_by"] = "queued", "", None
         job["gen"] += 1
         gen = job["gen"]
     threading.Thread(target=run_job, args=(job, gen), daemon=True).start()
@@ -547,3 +833,6 @@ def api_clear():
         for k in [k for k, v in jobs.items() if v["status"] not in ACTIVE]:
             del jobs[k]
     return jsonify(ok=True)
+
+
+threading.Thread(target=quota_watcher, daemon=True).start()

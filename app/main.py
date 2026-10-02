@@ -1,15 +1,18 @@
 # Copyright (c) 2026 Filipe Vasconcelos Batista <filipevbatista1@gmail.com>
 # Licensed under the PolyForm Noncommercial License 1.0.0 (see LICENSE).
+import copy
 import datetime
 import json
 import os
 import re
+import shutil
 import threading
 import time
 import uuid
 from zoneinfo import ZoneInfo
 
 import requests
+import yaml
 from flask import Flask, jsonify, request, send_from_directory
 
 # Caminhos: no Docker são os do container; fora dele (Flatpak, nativo) definem-se por variáveis de ambiente
@@ -19,6 +22,7 @@ CONFIG_DIR = os.environ.get("LD_CONFIG_DIR", "/config")  # definições e histó
 CONFIG = os.path.join(CONFIG_DIR, "config.json")
 HISTORY = os.path.join(CONFIG_DIR, "history.json")
 USAGE = os.path.join(CONFIG_DIR, "usage.json")
+SPEED_HISTORY = os.path.join(CONFIG_DIR, "speed_history.json")
 PERIODS = ("day", "week", "month", "year")
 GIB = 1024 ** 3
 FR = ZoneInfo("Europe/Paris")  # a API do 1fichier indica que as datas são na hora de França
@@ -30,24 +34,66 @@ RUNNING = ("queued", "getting_link", "downloading")
 app = Flask(__name__, static_folder="static", static_url_path="")
 jobs = {}  # id -> dict
 lock = threading.Lock()
+queue_order = []  # ids dos downloads, de cima para baixo: é a ordem em que arrancam
+queue_rank = {}  # id -> posição (reconstruído sempre que a ordem muda)
+
+
+def rebuild_rank():
+    global queue_rank
+    queue_rank = {i: n for n, i in enumerate(queue_order)}
 
 
 class Slots:
-    """Limite de downloads em simultâneo que pode mudar em execução (ao contrário de um Semaphore)."""
+    """Lugares de download em simultâneo (o número pode mudar em execução). Quem espera arranca por ordem
+    da fila: quando um lugar fica livre, avança o primeiro da fila que ainda está à espera."""
 
     def __init__(self):
         self.cv = threading.Condition()
         self.n = 0
+        self.waiting = {}  # id -> (job, gen)
+
+    @staticmethod
+    def stale(job, gen):
+        return job["gen"] != gen or job["status"] == "canceled"  # pausado, retomado de novo ou cancelado
+
+    def my_turn(self, job_id):
+        live = [i for i, (j, g) in self.waiting.items() if not self.stale(j, g)]
+        return bool(live) and min(live, key=lambda i: queue_rank.get(i, 1 << 30)) == job_id
+
+    def enqueue(self, job, gen):
+        """Põe o job na fila já (antes de a thread arrancar), para a ordem não depender de quem arranca primeiro."""
+        with self.cv:
+            self.waiting[job["id"]] = (job, gen)
+
+    def slot(self, job, gen):
+        return _Slot(self, job, gen)
+
+
+class _Slot:
+    def __init__(self, slots, job, gen):
+        self.slots, self.job, self.gen, self.got = slots, job, gen, False
 
     def __enter__(self):
-        with self.cv:
-            self.cv.wait_for(lambda: self.n < get_max_parallel())
-            self.n += 1
+        s, job, gen = self.slots, self.job, self.gen
+        with s.cv:
+            s.waiting[job["id"]] = (job, gen)
+            # acorda de segundo a segundo, por isso apanha mudanças de ordem, pausas e cancelamentos
+            while not (s.stale(job, gen) or (s.n < get_max_parallel() and s.my_turn(job["id"]))):
+                s.cv.wait(timeout=1)
+            if s.waiting.get(job["id"], (None, None))[1] == gen:  # não apaga a entrada de uma execução mais recente
+                s.waiting.pop(job["id"])
+            if s.stale(job, gen):
+                s.cv.notify_all()
+                return False  # pausado/cancelado enquanto esperava: não arranca
+            s.n += 1
+            self.got = True
+            return True
 
     def __exit__(self, *exc):
-        with self.cv:
-            self.n -= 1
-            self.cv.notify_all()
+        if self.got:
+            with self.slots.cv:
+                self.slots.n -= 1
+                self.slots.cv.notify_all()
 
 
 sem = Slots()
@@ -90,6 +136,217 @@ def save_cfg(c):
     with open(CONFIG, "w") as f:
         json.dump(c, f)
     os.chmod(CONFIG, 0o600)
+
+
+# ---------------------------------------------------------------- definições (settings.yaml)
+# Chaves e limites ficam num ficheiro YAML editável à mão (e pelo ecrã ⚙), fora do repositório.
+# O estado interno (histórico, consumo, destino escolhido) continua em config.json/history.json/usage.json.
+SETTINGS_FILE = os.environ.get("LD_SETTINGS_FILE", os.path.join(CONFIG_DIR, "settings.yaml"))
+DEFAULTS = {
+    "fichier_api_key": "",
+    "tmdb_api_key": "",
+    "downloads": {"max_parallel": 2, "speed_limit_mbps": 0},
+    "api": {"requests_per_second": 2, "stop_after_errors": 5},
+    "data_limit": {"gb": 0, "period": "month", "clock": "fichier", "month_start_day": 1},
+    "disk": {"min_free_gb": 0, "warn_free_gb": 0},
+    "network": {"detect": True},
+}
+ENV_INITIAL = {"fichier_api_key": "FICHIER_API_KEY", "tmdb_api_key": "TMDB_API_KEY",
+               "downloads.max_parallel": "MAX_PARALLEL"}
+_settings = {"mtime": -1, "data": {}, "error": ""}
+
+
+def _dig(d, path, default=None):
+    for k in path.split("."):
+        if not isinstance(d, dict) or d.get(k) is None:
+            return default
+        d = d[k]
+    return d
+
+
+def load_settings():
+    """Lê o settings.yaml (com cache pela data de modificação, para poder ser chamado a cada bloco)."""
+    try:
+        m = os.stat(SETTINGS_FILE).st_mtime_ns
+    except OSError:
+        m = None
+    if m == _settings["mtime"]:
+        return _settings["data"]
+    data, err = {}, ""
+    if m is not None:
+        try:
+            with open(SETTINGS_FILE) as f:
+                data = yaml.safe_load(f) or {}
+            if not isinstance(data, dict):
+                raise ValueError("o ficheiro não é um mapa YAML")
+        except Exception as e:  # ficheiro editado à mão com erro: mantém os últimos valores válidos
+            data, err = _settings["data"], f"settings.yaml inválido ({e}); a usar os últimos valores válidos"
+    _settings.update(mtime=m, data=data, error=err)
+    return data
+
+
+def sval(path, env=None):
+    """Valor efetivo: settings.yaml > variável de ambiente (.env) > por defeito."""
+    v = _dig(load_settings(), path)
+    if v is None or v == "":
+        e = os.environ.get(env, "").strip() if env else ""
+        if e:
+            return e
+        v = _dig(DEFAULTS, path)
+    return v
+
+
+def ssource(path, env=None):
+    v = _dig(load_settings(), path)
+    if v is not None and str(v).strip():
+        return "app"
+    return "env" if env and os.environ.get(env, "").strip() else "none"
+
+
+def snum(path, kind, lo, hi, env=None):
+    try:
+        v = kind(sval(path, env))
+    except (TypeError, ValueError):
+        v = kind(_dig(DEFAULTS, path))
+    return max(lo, min(hi, v))
+
+
+def render_settings(d):
+    """Texto do settings.yaml, com comentários (o ficheiro é reescrito assim quando se guarda no ecrã ⚙)."""
+    def g(path):
+        v = _dig(d, path)
+        return _dig(DEFAULTS, path) if v is None else v
+
+    def q(v):
+        return json.dumps(str(v), ensure_ascii=False)  # JSON é YAML válido
+
+    return f"""# 1fichier Light Downloader - settings
+# Podes editar este ficheiro à mão (a app relê-o sozinha) ou usar o ecrã ⚙ Definições.
+# Contém as tuas API keys: NÃO o ponhas no repositório (já está no .gitignore).
+# Ao guardar pelo ecrã ⚙, o ficheiro é reescrito: os comentários voltam a ser escritos e chaves desconhecidas perdem-se.
+
+# API key do 1fichier (1fichier -> Parâmetros -> API)
+fichier_api_key: {q(g("fichier_api_key"))}
+# Chave do TMDB (opcional, para pesquisar nome e ano das séries)
+tmdb_api_key: {q(g("tmdb_api_key"))}
+
+downloads:
+  # Downloads em simultâneo (1-10)
+  max_parallel: {g("downloads.max_parallel")}
+  # Limite de velocidade total em MB/s (0 = sem limite)
+  speed_limit_mbps: {g("downloads.speed_limit_mbps")}
+
+api:
+  # Pedidos por segundo à API do 1fichier (máximo permitido por eles: 3)
+  requests_per_second: {g("api.requests_per_second")}
+  # Pausa tudo depois de N erros seguidos da API, para evitar bloqueio da conta/IP (0 = desligado)
+  stop_after_errors: {g("api.stop_after_errors")}
+
+data_limit:
+  # Limite de dados descarregados por esta app, em GB (0 = sem limite)
+  gb: {g("data_limit.gb")}
+  # day | week | month | year
+  period: {q(g("data_limit.period"))}
+  # fichier = hora de França (a da API do 1fichier) | local = hora do sistema
+  clock: {q(g("data_limit.clock"))}
+  # Dia do mês (1-28) em que o período mensal começa
+  month_start_day: {g("data_limit.month_start_day")}
+
+disk:
+  # Pausa os downloads com menos de X GB livres no destino (0 = desligado)
+  min_free_gb: {g("disk.min_free_gb")}
+  # Avisa quando restam menos de X GB livres (0 = desligado)
+  warn_free_gb: {g("disk.warn_free_gb")}
+
+network:
+  # Guarda a velocidade por rede (operador da ligação), para não estimar tempos com a média de outra rede.
+  # Para saber o operador, a app consulta o ipinfo.io de tempos a tempos (como qualquer site, esse serviço vê o teu IP;
+  # a app só guarda o nome do operador). false = desligado: tudo conta como uma única rede.
+  detect: {"true" if g("network.detect") in (True, "true", "True", 1, "1") else "false"}
+"""
+
+
+def update_settings(changes):
+    """changes: {'caminho.com.pontos': valor}. Escreve o ficheiro de forma atómica, só legível pelo dono."""
+    data = copy.deepcopy(load_settings())
+    for path, value in changes.items():
+        *parents, last = path.split(".")
+        node = data
+        for k in parents:
+            node = node.setdefault(k, {})
+        node[last] = value
+    os.makedirs(os.path.dirname(SETTINGS_FILE), exist_ok=True)
+    tmp = SETTINGS_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        f.write(render_settings(data))
+    os.chmod(tmp, 0o600)
+    try:  # no Docker corremos como root: devolve o ficheiro ao dono da pasta, para o editares sem sudo
+        st = os.stat(os.path.dirname(SETTINGS_FILE))
+        os.chown(tmp, st.st_uid, st.st_gid)
+    except OSError:
+        pass
+    os.replace(tmp, SETTINGS_FILE)
+    _settings["mtime"] = -1  # força a releitura
+
+
+def init_settings():
+    """Primeira execução: cria o settings.yaml (e migra as definições da versão anterior, em config.json)."""
+    if os.path.exists(SETTINGS_FILE):
+        return
+    old = load_cfg()
+    legacy = {"fichier_api_key": old.get("api_key"), "tmdb_api_key": old.get("tmdb_key"),
+              "downloads.max_parallel": old.get("max_parallel"), "downloads.speed_limit_mbps": old.get("speed_limit"),
+              "data_limit.gb": old.get("quota_gb"), "data_limit.period": old.get("quota_period"),
+              "data_limit.clock": old.get("quota_clock"), "data_limit.month_start_day": old.get("quota_day")}
+    try:
+        update_settings({k: v for k, v in legacy.items() if v not in (None, "")})
+    except OSError as e:
+        print(f"Aviso: não consegui criar {SETTINGS_FILE}: {e}", flush=True)
+
+
+def get_key():
+    return str(sval("fichier_api_key", "FICHIER_API_KEY")).strip()
+
+
+def get_tmdb_key():
+    return str(sval("tmdb_api_key", "TMDB_API_KEY")).strip()
+
+
+def get_speed_limit():
+    """Limite em bytes/s (definido em MB/s). 0 = sem limite."""
+    return int(snum("downloads.speed_limit_mbps", float, 0, 10000) * 1_000_000)
+
+
+def get_max_parallel():
+    return snum("downloads.max_parallel", int, 1, 10, "MAX_PARALLEL")
+
+
+def get_quota():
+    """(limite em bytes, período). Limite 0 = sem limite."""
+    period = sval("data_limit.period")
+    return int(snum("data_limit.gb", float, 0, 1_000_000) * GIB), period if period in PERIODS else "month"
+
+
+def month_anchor():
+    """Dia do mês em que o 'mês' começa (1-28), para acompanhar a data de renovação da conta."""
+    return snum("data_limit.month_start_day", int, 1, 28)
+
+
+def quota_today():
+    """O dia que conta para a quota: por defeito o de França (como o 1fichier); ou o do sistema."""
+    if sval("data_limit.clock") == "local":
+        return datetime.date.today()
+    return datetime.datetime.now(FR).date()
+
+
+def sbool(path):
+    return sval(path) in (True, "true", "True", "yes", 1, "1")
+
+
+def get_disk_limits():
+    """(mínimo livre, aviso) em bytes. 0 = desligado."""
+    return (int(snum("disk.min_free_gb", float, 0, 1_000_000) * GIB),
+            int(snum("disk.warn_free_gb", float, 0, 1_000_000) * GIB))
 
 
 def selectable_enabled():
@@ -136,21 +393,6 @@ def save_history(h):
     os.makedirs(os.path.dirname(HISTORY), exist_ok=True)
     with open(HISTORY, "w") as f:
         json.dump(h, f)
-
-
-def quota_today():
-    """O dia que conta para a quota: por defeito o de França (como o 1fichier); ou o do container (TZ)."""
-    if load_cfg().get("quota_clock") == "local":
-        return datetime.date.today()
-    return datetime.datetime.now(FR).date()
-
-
-def month_anchor():
-    """Dia do mês em que o 'mês' começa (1-28), para acompanhar a data de renovação da conta."""
-    try:
-        return max(1, min(28, int(load_cfg().get("quota_day") or 1)))
-    except ValueError:
-        return 1
 
 
 def period_start(period, today=None):
@@ -223,14 +465,120 @@ class Usage:
 usage = Usage()
 
 
-def get_quota():
-    """(limite em bytes, período). Limite 0 = sem limite."""
-    c = load_cfg()
-    period = c.get("quota_period") if c.get("quota_period") in PERIODS else "month"
-    try:
-        return int(float(c.get("quota_gb") or 0) * GIB), period
-    except ValueError:
-        return 0, period
+class NetworkInfo:
+    """Identifica a rede pelo operador da ligação (ASN), via ipinfo.io. Só guarda o operador, nunca o IP.
+    A consulta nunca corre no caminho do download: get() devolve o último valor conhecido."""
+
+    TTL = 300  # s entre consultas
+    UNKNOWN = {"id": "unknown", "name": ""}
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.value = dict(self.UNKNOWN)
+        self.checked = 0.0
+
+    def get(self):
+        with self.lock:
+            return dict(self.value)
+
+    def refresh(self, force=False):
+        if not sbool("network.detect"):
+            with self.lock:
+                self.value = dict(self.UNKNOWN)
+            return
+        now = time.monotonic()
+        if not force and now - self.checked < self.TTL:
+            return
+        try:
+            org = requests.get("https://ipinfo.io/json", timeout=5, headers={"User-Agent": UA}).json().get("org") or ""
+            m = re.match(r"(AS\d+)\s*(.*)", org)
+            value = {"id": m.group(1), "name": m.group(2)} if m else {"id": org, "name": org}
+            if not value["id"]:
+                raise ValueError("sem operador")
+        except Exception:
+            self.checked = now - self.TTL + 30  # falhou (sem rede?): tenta de novo daqui a 30 s e mantém o último valor
+            return
+        with self.lock:
+            self.value, self.checked = value, now
+
+
+network = NetworkInfo()
+
+
+class SpeedLog:
+    """Débito total (todos os downloads somados) por sessão, guardado para estimar tempos em sessões futuras.
+    Uma sessão acaba quando passam SESSION_GAP segundos sem dados. Só conta o tempo em que houve dados
+    (pausas e esperas ficam de fora) e esse tempo conta uma só vez, mesmo com downloads em paralelo."""
+
+    SESSION_GAP = 600  # s sem dados -> nova sessão
+    ACTIVE_GAP = 5  # s: intervalos maiores entre blocos não contam como tempo a descarregar
+    KEEP = 30  # sessões guardadas
+    RECENT = 5  # sessões usadas na média
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.cur = None
+        self.last = None  # time.monotonic() do último bloco
+        self.dirty = False
+        try:
+            with open(SPEED_HISTORY) as f:
+                self.sessions = json.load(f)
+        except Exception:
+            self.sessions = []
+
+    def add(self, nbytes):
+        now = time.monotonic()
+        net = network.get()
+        with self.lock:
+            # nova sessão: passou muito tempo sem dados ou a rede mudou
+            if (self.cur is None or self.last is None or now - self.last > self.SESSION_GAP
+                    or self.cur["net"] != net["id"]):
+                self.cur = {"start": time.strftime("%Y-%m-%d %H:%M"), "bytes": 0, "secs": 0.0,
+                            "net": net["id"], "net_name": net["name"]}
+                self.sessions.append(self.cur)
+                self.sessions = self.sessions[-self.KEEP:]
+                self.last = None
+            gap = now - self.last if self.last is not None else 0
+            if gap <= self.ACTIVE_GAP:
+                self.cur["secs"] += gap
+            self.cur["bytes"] += nbytes
+            self.last, self.dirty = now, True
+
+    def _avg(self, sessions):
+        usable = [x for x in sessions if x["secs"] >= 30]  # ignora sessões minúsculas
+        secs = sum(x["secs"] for x in usable)
+        return (sum(x["bytes"] for x in usable) / secs if secs else 0), len(usable)
+
+    def stats(self):
+        """Média só com sessões da rede atual: a velocidade de outra rede não serve para estimar esta."""
+        net = network.get()
+        with self.lock:
+            by_net = {}
+            for x in self.sessions:
+                by_net.setdefault(x.get("net", "unknown"), []).append(x)
+            mine = by_net.get(net["id"], [])[-self.RECENT:]
+            avg, used = self._avg(mine)
+            rows = [{"start": x["start"], "bytes": x["bytes"], "secs": round(x["secs"]),
+                     "speed": x["bytes"] / x["secs"] if x["secs"] >= 10 else 0} for x in mine]
+            networks = []
+            for nid, xs in by_net.items():
+                n_avg, n_used = self._avg(xs[-self.RECENT:])
+                name = next((x.get("net_name") for x in reversed(xs) if x.get("net_name")), "")
+                networks.append({"id": nid, "name": name, "avg": n_avg, "sessions": n_used, "current": nid == net["id"]})
+            return {"network": net, "avg": avg, "used": used, "sessions": rows, "networks": networks}
+
+    def flush(self):
+        with self.lock:
+            if not self.dirty:
+                return
+            os.makedirs(CONFIG_DIR, exist_ok=True)
+            with open(SPEED_HISTORY, "w") as f:
+                json.dump([{"start": x["start"], "bytes": x["bytes"], "secs": round(x["secs"], 1),
+                            "net": x.get("net", "unknown"), "net_name": x.get("net_name", "")} for x in self.sessions], f)
+            self.dirty = False
+
+
+speedlog = SpeedLog()
 
 
 def quota_exceeded():
@@ -246,28 +594,107 @@ def quota_info():
             "exceeded": limit > 0 and usage.used(period) >= limit}
 
 
-def quota_pause_all():
-    """Limite atingido: pausa tudo o que está ativo ou na fila (retoma sozinho quando houver margem)."""
+def pause_all_for(reason):
+    """Pausa tudo o que está ativo ou na fila. reason: quota | disk | api."""
     with lock:
         for j in jobs.values():
             if j["status"] in RUNNING:
-                j["status"], j["paused_by"], j["speed"] = "paused", "quota", 0
+                j["status"], j["paused_by"], j["speed"] = "paused", reason, 0
                 j["gen"] += 1
 
 
-def quota_tick():
-    """Guarda o contador e retoma o que a quota tinha pausado, se já houver margem."""
+def free_space(path):
+    while path and not os.path.exists(path):  # a pasta de destino pode ainda não existir
+        path = os.path.dirname(path)
+    return shutil.disk_usage(path or "/").free
+
+
+def disk_low(path):
+    minimum, _ = get_disk_limits()
+    return minimum > 0 and free_space(path) < minimum
+
+
+def disk_state(path):
+    minimum, warn = get_disk_limits()
+    warn = max(warn, minimum) if warn else 0
+    free = free_space(path)
+    return {"free": free, "min_free": minimum, "warn_free": warn,
+            "low": minimum > 0 and free < minimum, "near": warn > 0 and minimum <= free < warn}
+
+
+class ApiGate:
+    """Limita os pedidos à API do 1fichier (máx. 3/s segundo a documentação) e dispara um 'disjuntor':
+    muitos erros seguidos (401/403/404/410/429, KO) levam a bloqueio temporário do IP/conta, por isso pára tudo."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.next = time.monotonic()
+        self.errors = 0
+        self.tripped = False
+
+    def wait(self):
+        rps = snum("api.requests_per_second", float, 0.2, 3)
+        with self.lock:
+            now = time.monotonic()
+            self.next = max(self.next, now)
+            delay = self.next - now
+            self.next += 1 / rps
+        if delay > 0:
+            time.sleep(delay)
+
+    def result(self, ok):
+        with self.lock:
+            self.errors = 0 if ok else self.errors + 1
+            limit = int(snum("api.stop_after_errors", int, 0, 100))
+            trip = limit > 0 and self.errors >= limit and not self.tripped
+            self.tripped = self.tripped or trip
+        if trip:
+            pause_all_for("api")
+
+    def reset(self):
+        with self.lock:
+            self.errors, self.tripped = 0, False
+
+    def snapshot(self):
+        return {"tripped": self.tripped, "errors": self.errors, "limit": int(snum("api.stop_after_errors", int, 0, 100))}
+
+
+api_gate = ApiGate()
+
+
+def api_post(path, payload):
+    """POST à API do 1fichier, respeitando o limite de pedidos e a contagem de erros. Devolve (resposta, json)."""
+    api_gate.wait()
+    key = get_key()
+    if not key:
+        raise RuntimeError("API key não definida (Definições)")
+    r = requests.post(f"{API}/{path}", json=payload, headers={"Authorization": f"Bearer {key}"}, timeout=30)
+    try:
+        j = r.json()
+    except ValueError:
+        j = {}
+    api_gate.result(r.status_code not in (401, 403, 404, 410, 429) and j.get("status") != "KO")
+    return r, j
+
+
+def limits_tick():
+    """Guarda o consumo e retoma o que um limite (dados, disco) tinha pausado, se já houver margem.
+    O que o disjuntor da API pausou não retoma sozinho: tens de o fazer tu."""
     usage.flush()
-    if not quota_exceeded():
-        for j in list(jobs.values()):
-            if j["status"] == "paused" and j.get("paused_by") == "quota":
-                resume_job(j)
+    speedlog.flush()
+    network.refresh()
+    for j in list(jobs.values()):
+        if j["status"] != "paused":
+            continue
+        why = j.get("paused_by")
+        if (why == "quota" and not quota_exceeded()) or (why == "disk" and not disk_low(j["dest"])):
+            resume_job(j)
 
 
 def quota_watcher():
     while True:
         time.sleep(20)
-        quota_tick()
+        limits_tick()
 
 
 def record_history(job, dest):
@@ -277,39 +704,6 @@ def record_history(job, dest):
         h[job["url"]] = {"filename": job["filename"], "path": dest, "rel": os.path.relpath(dest, job["dest"]),
                          "size": job["size"], "date": time.strftime("%Y-%m-%d %H:%M")}
         save_history(h)
-
-
-def setting(name, env):
-    """Valor guardado na app; se não houver, o do ambiente (.env) serve de valor inicial."""
-    return (load_cfg().get(name) or "").strip() or os.environ.get(env, "").strip()
-
-
-def setting_source(name, env):
-    return "app" if (load_cfg().get(name) or "").strip() else "env" if os.environ.get(env, "").strip() else "none"
-
-
-def get_key():
-    return setting("api_key", "FICHIER_API_KEY")
-
-
-def get_tmdb_key():
-    return setting("tmdb_key", "TMDB_API_KEY")
-
-
-def get_speed_limit():
-    """Limite em bytes/s (definido em MB/s). 0 = sem limite."""
-    try:
-        mbps = float(load_cfg().get("speed_limit") or 0)
-    except ValueError:
-        return 0
-    return int(max(0.0, min(mbps, 10000.0)) * 1_000_000)
-
-
-def get_max_parallel():
-    try:
-        return max(1, min(10, int(load_cfg().get("max_parallel") or os.environ.get("MAX_PARALLEL") or 2)))
-    except ValueError:
-        return 2
 
 
 def safe_name(n):
@@ -415,13 +809,14 @@ def parse_groups(text, folders=False):
 
 SERIES_RE = re.compile(r"^(.*?)[\s._-]+S(\d{1,2})E(\d{1,3})", re.I)
 ALT_RE = re.compile(r"^(.*?)[\s._-]+(\d{1,2})x(\d{2,3})\b", re.I)  # Nome 1x05
-ABS_RE = re.compile(r"^(.*?)\s+-\s+(\d{1,3})(?:v\d+)?\s+-\s+")  # Nome - 05 - Título (numeração contínua)
+# Nome - 05 - Título | Nome - 001 [tags] | Nome - 12.mkv  (numeração contínua; 4 dígitos só se não for um ano)
+ABS_RE = re.compile(r"^(.*?)\s+-\s+(\d{1,3}|(?!19|20)\d{4})(?:v\d+)?(?:\s+-\s+|\s*[\[(.]|\s*$)")
 
 
 def parse_episode(filename):
     """'Título.S02E05...' / 'Título 2x05' / 'Título - 05 - ...' -> ('Título', temporada, episódio).
     Sem temporada no nome assume-se a 1. Sem padrão -> ('', None, None)."""
-    fn = filename or ""
+    fn = (filename or "").replace("_", " ")  # 'Nome_-_001_[tags]' passa a 'Nome - 001 [tags]'
     m = SERIES_RE.match(fn) or ALT_RE.match(fn)
     if m:
         season, ep = int(m.group(2)), int(m.group(3))
@@ -505,26 +900,23 @@ def advance(job, gen, status):
 
 
 def run_job(job, gen):
-    with sem:
-        if quota_exceeded():
-            quota_pause_all()
+    with sem.slot(job, gen) as got:
+        if not got:
             return
+        for reason, hit in (("api", api_gate.tripped), ("quota", quota_exceeded()), ("disk", disk_low(job["dest"]))):
+            if hit:  # nunca arranca com um limite esgotado
+                pause_all_for(reason)
+                return
         if not advance(job, gen, "getting_link"):
             return
         try:
-            key = get_key()
-            if not key:
-                raise RuntimeError("API key não definida")
-            auth = {"Authorization": f"Bearer {key}"}
             if not job["filename"]:
-                info = requests.post(f"{API}/file/info.cgi", json={"url": job["url"]}, headers=auth, timeout=30).json()
+                _, info = api_post("file/info.cgi", {"url": job["url"]})
                 if info.get("status") == "KO" or not info.get("filename"):
                     raise RuntimeError(info.get("message", "Ficheiro não encontrado"))
                 job["filename"] = info["filename"]
                 job["size"] = int(info.get("size") or 0)
-            r = requests.post(f"{API}/download/get_token.cgi", json={"url": job["url"]},
-                              headers=auth, timeout=30)
-            j = r.json()
+            _, j = api_post("download/get_token.cgi", {"url": job["url"]})
             if j.get("status") != "OK":
                 raise RuntimeError(j.get("message", "Erro ao obter link"))
             if not advance(job, gen, "downloading"):
@@ -544,7 +936,7 @@ def run_job(job, gen):
                     raise RuntimeError(f"HTTP {d.status_code}")
                 total = done + int(d.headers.get("Content-Length", 0))
                 job["size"] = total or job["size"]
-                t0, base = time.time(), done
+                t0, base, last_disk = time.time(), done, 0.0
                 with open(part, "ab" if done else "wb") as f:
                     for chunk in d.iter_content(1 << 18):
                         throttle.wait(len(chunk))
@@ -555,15 +947,22 @@ def run_job(job, gen):
                         job["done"] = done
                         job["speed"] = (done - base) / max(time.time() - t0, 0.001)
                         usage.add(len(chunk))
+                        speedlog.add(len(chunk))
                         if quota_exceeded():
-                            quota_pause_all()
+                            pause_all_for("quota")
                             return
+                        if time.monotonic() - last_disk > 2:  # o disco não se verifica a cada bloco
+                            last_disk = time.monotonic()
+                            if disk_low(job["dest"]):
+                                pause_all_for("disk")
+                                return
             os.replace(part, dest)
             record_history(job, dest)
             job["status"] = "done"
         except Exception as e:
-            job["status"] = "error"
-            job["error"] = str(e)
+            with lock:
+                if job["gen"] == gen:  # se entretanto foi pausado/cancelado, esse estado prevalece
+                    job["status"], job["error"] = "error", str(e)
 
 
 @app.get("/")
@@ -590,64 +989,88 @@ def api_usage_reset():
     return jsonify(ok=True)
 
 
+def _num(kind, lo, hi):
+    def f(v):
+        return max(lo, min(hi, kind(v if v not in (None, "") else 0)))
+    return f
+
+
+def _enum(*options):
+    def f(v):
+        if v not in options:
+            raise ValueError(v)
+        return v
+    return f
+
+
+def _bool(v):
+    if isinstance(v, str):
+        return v.strip().lower() in ("true", "1", "yes")
+    return bool(v)
+
+
+def _secret(v):
+    return (v or "").strip()
+
+
+# campo do pedido -> (caminho no settings.yaml, validação/conversão)
+FIELDS = {
+    "fichier_api_key": ("fichier_api_key", _secret),
+    "tmdb_api_key": ("tmdb_api_key", _secret),
+    "max_parallel": ("downloads.max_parallel", _num(int, 1, 10)),
+    "speed_limit": ("downloads.speed_limit_mbps", _num(float, 0, 10000)),
+    "requests_per_second": ("api.requests_per_second", _num(float, 0.2, 3)),
+    "stop_after_errors": ("api.stop_after_errors", _num(int, 0, 100)),
+    "quota_gb": ("data_limit.gb", _num(float, 0, 1_000_000)),
+    "quota_period": ("data_limit.period", _enum(*PERIODS)),
+    "quota_clock": ("data_limit.clock", _enum("fichier", "local")),
+    "quota_day": ("data_limit.month_start_day", _num(int, 1, 28)),
+    "disk_min_free_gb": ("disk.min_free_gb", _num(float, 0, 1_000_000)),
+    "disk_warn_free_gb": ("disk.warn_free_gb", _num(float, 0, 1_000_000)),
+    "network_detect": ("network.detect", _bool),
+}
+
+
+@app.get("/api/limits")
+def api_limits():
+    """Estado dos limites que pedem atenção: disco do destino e disjuntor da API."""
+    load_settings()
+    return jsonify(disk=disk_state(current_dest()[0]), api=api_gate.snapshot(), settings_error=_settings["error"],
+                   speed=speedlog.stats())
+
+
 @app.get("/api/settings")
 def get_settings():
-    """Nunca devolve as chaves, só se existem e de onde vêm (app ou .env)."""
-    return jsonify(fichier={"set": bool(get_key()), "source": setting_source("api_key", "FICHIER_API_KEY")},
-                   tmdb={"set": bool(get_tmdb_key()), "source": setting_source("tmdb_key", "TMDB_API_KEY")},
+    """Nunca devolve as chaves, só se existem e de onde vêm (settings.yaml ou .env)."""
+    load_settings()
+    minimum, warn = get_disk_limits()
+    return jsonify(fichier={"set": bool(get_key()), "source": ssource("fichier_api_key", "FICHIER_API_KEY")},
+                   tmdb={"set": bool(get_tmdb_key()), "source": ssource("tmdb_api_key", "TMDB_API_KEY")},
                    max_parallel=get_max_parallel(), speed_limit=get_speed_limit() / 1_000_000,
+                   requests_per_second=snum("api.requests_per_second", float, 0.2, 3),
+                   stop_after_errors=int(snum("api.stop_after_errors", int, 0, 100)),
                    quota_gb=get_quota()[0] / GIB, quota_period=get_quota()[1], usage=quota_info(),
-                   quota_clock=load_cfg().get("quota_clock", "fichier"), quota_day=month_anchor())
+                   quota_clock="local" if sval("data_limit.clock") == "local" else "fichier", quota_day=month_anchor(),
+                   disk_min_free_gb=minimum / GIB, disk_warn_free_gb=warn / GIB, network_detect=sbool("network.detect"),
+                   settings_file=os.environ.get("HOST_SETTINGS_FILE", SETTINGS_FILE), settings_error=_settings["error"])
 
 
 @app.post("/api/settings")
 def set_settings():
-    """Só altera o que vier no pedido. Texto vazio numa chave apaga o valor da app (volta a valer o .env)."""
-    body, c = request.json, load_cfg()
-    for field, name in (("fichier_api_key", "api_key"), ("tmdb_api_key", "tmdb_key")):
-        if field in body:
-            value = (body[field] or "").strip()
-            if value:
-                c[name] = value
-            else:
-                c.pop(name, None)
-    if "speed_limit" in body:
+    """Só altera o que vier no pedido. Texto vazio numa chave apaga o valor (volta a valer o .env, se existir)."""
+    changes = {}
+    for field, value in request.json.items():
+        if field not in FIELDS:
+            continue
+        path, convert = FIELDS[field]
         try:
-            mbps = float(body["speed_limit"] or 0)
+            changes[path] = convert(value)
         except (TypeError, ValueError):
-            return jsonify(error="speed_limit inválido"), 400
-        if mbps > 0:
-            c["speed_limit"] = min(mbps, 10000.0)
-        else:
-            c.pop("speed_limit", None)  # 0 ou vazio = sem limite
-    if "quota_gb" in body:
-        try:
-            gb = float(body["quota_gb"] or 0)
-        except (TypeError, ValueError):
-            return jsonify(error="quota_gb inválido"), 400
-        if gb > 0:
-            c["quota_gb"] = gb
-        else:
-            c.pop("quota_gb", None)
-    if "quota_period" in body:
-        if body["quota_period"] not in PERIODS:
-            return jsonify(error="quota_period inválido"), 400
-        c["quota_period"] = body["quota_period"]
-    if "quota_clock" in body:
-        if body["quota_clock"] not in ("fichier", "local"):
-            return jsonify(error="quota_clock inválido"), 400
-        c["quota_clock"] = body["quota_clock"]
-    if "quota_day" in body:
-        try:
-            c["quota_day"] = max(1, min(28, int(body["quota_day"])))
-        except (TypeError, ValueError):
-            return jsonify(error="quota_day inválido"), 400
-    if "max_parallel" in body:
-        try:
-            c["max_parallel"] = max(1, min(10, int(body["max_parallel"])))
-        except (TypeError, ValueError):
-            return jsonify(error="max_parallel inválido"), 400
-    save_cfg(c)
+            return jsonify(error=f"{field} inválido"), 400
+    try:
+        update_settings(changes)
+    except OSError as e:
+        return jsonify(error=f"Não consegui guardar {SETTINGS_FILE}: {e}"), 500
     with sem.cv:
         sem.cv.notify_all()  # se o limite subiu, os downloads em espera arrancam já
     return jsonify(ok=True)
@@ -763,13 +1186,17 @@ def api_start():
                        tmdb_id=tmdb_id, name_mode=name_mode, dest=dest)
             with lock:
                 jobs[job["id"]] = job
+                queue_order.append(job["id"])
+                rebuild_rank()
+            sem.enqueue(job, job["gen"])
             threading.Thread(target=run_job, args=(job, job["gen"]), daemon=True).start()
     return jsonify(ok=True)
 
 
 @app.get("/api/jobs")
 def api_jobs():
-    return jsonify(list(jobs.values()))
+    with lock:
+        return jsonify([jobs[i] for i in queue_order if i in jobs])
 
 
 def pause_job(job):
@@ -784,9 +1211,12 @@ def resume_job(job):
     with lock:
         if job["status"] != "paused":
             return
+        if job.get("paused_by") == "api":
+            api_gate.reset()  # tu verificaste o problema e retomaste: o contador de erros recomeça
         job["status"], job["error"], job["paused_by"] = "queued", "", None
         job["gen"] += 1
         gen = job["gen"]
+    sem.enqueue(job, gen)
     threading.Thread(target=run_job, args=(job, gen), daemon=True).start()
 
 
@@ -796,6 +1226,37 @@ def api_cancel(jid):
         if jid in jobs and jobs[jid]["status"] in ACTIVE:
             jobs[jid]["status"] = "canceled"
             jobs[jid]["gen"] += 1
+    return jsonify(ok=True)
+
+
+def retry_job(job):
+    """Repete um download que falhou (ou foi cancelado); continua a partir do .part, se existir."""
+    with lock:
+        if job["status"] not in ("error", "canceled"):
+            return
+        job["status"], job["error"], job["paused_by"], job["speed"] = "queued", "", None, 0
+        job["gen"] += 1
+        gen = job["gen"]
+    sem.enqueue(job, gen)
+    threading.Thread(target=run_job, args=(job, gen), daemon=True).start()
+
+
+@app.post("/api/retry/<jid>")
+def api_retry(jid):
+    if jid in jobs:
+        retry_job(jobs[jid])
+    return jsonify(ok=True)
+
+
+@app.post("/api/reorder")
+def api_reorder():
+    """{ids: [...]}: nova ordem da fila (de cima para baixo). O que não vier na lista fica no fim."""
+    ids = [i for i in dict.fromkeys(request.json.get("ids", [])) if i in jobs]
+    with lock:
+        queue_order[:] = ids + [i for i in queue_order if i not in ids]
+        rebuild_rank()
+    with sem.cv:
+        sem.cv.notify_all()
     return jsonify(ok=True)
 
 
@@ -832,7 +1293,11 @@ def api_clear():
     with lock:
         for k in [k for k, v in jobs.items() if v["status"] not in ACTIVE]:
             del jobs[k]
+        queue_order[:] = [i for i in queue_order if i in jobs]
+        rebuild_rank()
     return jsonify(ok=True)
 
 
+init_settings()
+threading.Thread(target=network.refresh, args=(True,), daemon=True).start()
 threading.Thread(target=quota_watcher, daemon=True).start()

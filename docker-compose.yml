@@ -8,11 +8,15 @@ services:
       - "${DOWNLOAD_DIR:?define DOWNLOAD_DIR no ficheiro .env}:/downloads"
       # Opcional: raiz onde a app permite escolher o destino (SELECTABLE_DIR). Vazia = volume vazio e opção escondida
       - "${SELECTABLE_DIR:-selectable-unused}:/selectable"
-      - fichier-config:/config
+      - fichier-config:/config  # estado interno (histórico, consumo, destino)
+      # Definições e chaves (settings.yaml): ficam em ./config, fora do git, e podes editá-las à mão
+      - ./config:/settings
     environment:
       FICHIER_API_KEY: "${FICHIER_API_KEY:-}"
       TMDB_API_KEY: "${TMDB_API_KEY:-}"
       TZ: "${TZ:-UTC}"
+      LD_SETTINGS_FILE: /settings/settings.yaml
+      HOST_SETTINGS_FILE: config/settings.yaml
       MAX_PARALLEL: "${MAX_PARALLEL:-2}"
       HOST_DOWNLOAD_DIR: "${DOWNLOAD_DIR}"
       HOST_SELECTABLE_DIR: "${SELECTABLE_DIR:-}"

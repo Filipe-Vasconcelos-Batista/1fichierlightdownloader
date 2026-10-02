@@ -5,3 +5,8 @@ __pycache__/
 .venv/
 node_modules/
 dist/
+
+# Definições locais (contêm as API keys): nunca vão para o repositório
+config/*
+!config/.gitkeep
+!config/settings.example.yaml

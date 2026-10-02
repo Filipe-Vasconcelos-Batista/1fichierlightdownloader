@@ -1,0 +1,44 @@
+# 1fichier Light Downloader - settings
+# Podes editar este ficheiro à mão (a app relê-o sozinha) ou usar o ecrã ⚙ Definições.
+# Copia este ficheiro para settings.yaml (a app cria-o sozinha na primeira execução) e preenche-o.
+# O settings.yaml contém as tuas API keys: NÃO o ponhas no repositório (já está no .gitignore).
+# Ao guardar pelo ecrã ⚙, o ficheiro é reescrito: os comentários voltam a ser escritos e chaves desconhecidas perdem-se.
+
+# API key do 1fichier (1fichier -> Parâmetros -> API)
+fichier_api_key: ""
+# Chave do TMDB (opcional, para pesquisar nome e ano das séries)
+tmdb_api_key: ""
+
+downloads:
+  # Downloads em simultâneo (1-10)
+  max_parallel: 2
+  # Limite de velocidade total em MB/s (0 = sem limite)
+  speed_limit_mbps: 0
+
+api:
+  # Pedidos por segundo à API do 1fichier (máximo permitido por eles: 3)
+  requests_per_second: 2
+  # Pausa tudo depois de N erros seguidos da API, para evitar bloqueio da conta/IP (0 = desligado)
+  stop_after_errors: 5
+
+data_limit:
+  # Limite de dados descarregados por esta app, em GB (0 = sem limite)
+  gb: 0
+  # day | week | month | year
+  period: "month"
+  # fichier = hora de França (a da API do 1fichier) | local = hora do sistema
+  clock: "fichier"
+  # Dia do mês (1-28) em que o período mensal começa
+  month_start_day: 1
+
+disk:
+  # Pausa os downloads com menos de X GB livres no destino (0 = desligado)
+  min_free_gb: 0
+  # Avisa quando restam menos de X GB livres (0 = desligado)
+  warn_free_gb: 0
+
+network:
+  # Guarda a velocidade por rede (operador da ligação), para não estimar tempos com a média de outra rede.
+  # Para saber o operador, a app consulta o ipinfo.io de tempos a tempos (como qualquer site, esse serviço vê o teu IP;
+  # a app só guarda o nome do operador). false = desligado: tudo conta como uma única rede.
+  detect: true

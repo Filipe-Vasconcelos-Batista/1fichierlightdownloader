@@ -9,7 +9,7 @@ RUN npm run build
 # Etapa 2: backend Python que serve a API e o frontend compilado
 FROM python:3.12-slim
 WORKDIR /app
-RUN pip install --no-cache-dir flask requests gunicorn
+RUN pip install --no-cache-dir flask requests gunicorn pyyaml
 COPY app /app
 COPY --from=web /web/dist /app/static
 ENV PYTHONUNBUFFERED=1

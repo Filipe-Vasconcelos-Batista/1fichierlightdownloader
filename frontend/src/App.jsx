@@ -11,6 +11,25 @@ const post = (url, body = {}) =>
 const formatSize = (n) =>
   !n ? '?' : n >= 1073741824 ? `${(n / 1073741824).toFixed(2)} GB` : `${(n / 1048576).toFixed(1)} MB`
 
+// 3725 -> "1 h 02 min"; 310 -> "5 min 10 s"; 42 -> "42 s"
+const formatDuration = (sec) => {
+  sec = Math.round(sec)
+  const h = Math.floor(sec / 3600)
+  const m = Math.floor((sec % 3600) / 60)
+  const s = sec % 60
+  if (h > 0) return `${h} h ${String(m).padStart(2, '0')} min`
+  if (m > 0) return `${m} min ${String(s).padStart(2, '0')} s`
+  return `${s} s`
+}
+
+// Hora a que deve terminar: "14:35", ou com o dia se não for hoje
+const formatEta = (sec, lang) => {
+  const end = new Date(Date.now() + sec * 1000)
+  const time = end.toLocaleTimeString(lang === 'pt' ? 'pt-PT' : 'en-GB', { hour: '2-digit', minute: '2-digit' })
+  if (end.toDateString() === new Date().toDateString()) return time
+  return `${end.toLocaleDateString(lang === 'pt' ? 'pt-PT' : 'en-GB', { day: '2-digit', month: '2-digit' })} ${time}`
+}
+
 const pad = (n) => String(n).padStart(2, '0')
 
 // Nome efetivo da pasta de um grupo: o escolhido nas opções, o escrito, ou o detetado
@@ -116,11 +135,17 @@ function SettingsModal({ t, onClose, onSaved }) {
   const [fichierKey, setFichierKey] = useState('')
   const [tmdbKey, setTmdbKey] = useState('')
   const [maxParallel, setMaxParallel] = useState(2)
+  const [saveError, setSaveError] = useState('')
   const [speedLimit, setSpeedLimit] = useState(0)
   const [quotaGb, setQuotaGb] = useState(0)
   const [quotaPeriod, setQuotaPeriod] = useState('month')
   const [quotaClock, setQuotaClock] = useState('fichier')
   const [quotaDay, setQuotaDay] = useState(1)
+  const [rps, setRps] = useState(2)
+  const [stopErrors, setStopErrors] = useState(5)
+  const [diskMin, setDiskMin] = useState(0)
+  const [diskWarn, setDiskWarn] = useState(0)
+  const [netDetect, setNetDetect] = useState(true)
 
   const load = () =>
     fetch('/api/settings').then((r) => r.json()).then((j) => {
@@ -131,6 +156,11 @@ function SettingsModal({ t, onClose, onSaved }) {
       setQuotaPeriod(j.quota_period)
       setQuotaClock(j.quota_clock)
       setQuotaDay(j.quota_day)
+      setRps(j.requests_per_second)
+      setStopErrors(j.stop_after_errors)
+      setDiskMin(j.disk_min_free_gb)
+      setDiskWarn(j.disk_warn_free_gb)
+      setNetDetect(j.network_detect)
     })
   useEffect(() => {
     load()
@@ -148,10 +178,15 @@ function SettingsModal({ t, onClose, onSaved }) {
   }
 
   const save = async () => {
-    const body = { max_parallel: maxParallel, speed_limit: speedLimit, quota_gb: quotaGb, quota_period: quotaPeriod, quota_clock: quotaClock, quota_day: quotaDay }
+    const body = { max_parallel: maxParallel, speed_limit: speedLimit, quota_gb: quotaGb, quota_period: quotaPeriod, quota_clock: quotaClock, quota_day: quotaDay, requests_per_second: rps, stop_after_errors: stopErrors, disk_min_free_gb: diskMin, disk_warn_free_gb: diskWarn, network_detect: netDetect }
     if (fichierKey.trim()) body.fichier_api_key = fichierKey
     if (tmdbKey.trim()) body.tmdb_api_key = tmdbKey
-    await post('/api/settings', body)
+    const r = await post('/api/settings', body)
+    if (!r.ok) {
+      const j = await r.json().catch(() => ({}))
+      setSaveError(j.error || 'Error')
+      return
+    }
     onSaved()
     onClose()
   }
@@ -162,6 +197,7 @@ function SettingsModal({ t, onClose, onSaved }) {
         <h3>{t.settings}</h3>
         {s && (
           <>
+            <h4>{t.sectionKeys}</h4>
             <KeyField
               label={t.fichierKey}
               hint={t.fichierKeyHint}
@@ -180,15 +216,7 @@ function SettingsModal({ t, onClose, onSaved }) {
               onChange={setTmdbKey}
               onRemove={() => remove('tmdb_api_key')}
             />
-            <div className="field">
-              <label>
-                <b>{t.speedLimit}</b> <span className="muted">{t.speedLimitHint}</span>
-              </label>
-              <div className="row">
-                <input type="number" min="0" step="0.5" className="year" value={speedLimit} onChange={(e) => setSpeedLimit(e.target.value)} />
-                <span className="muted">MB/s</span>
-              </div>
-            </div>
+            <h4>{t.sectionData}</h4>
             <div className="field">
               <label>
                 <b>{t.quota}</b> <span className="muted">{t.quotaHint}</span>
@@ -225,6 +253,60 @@ function SettingsModal({ t, onClose, onSaved }) {
                 </button>
               </span>
             </div>
+            <h4>{t.sectionApi}</h4>
+            <div className="field">
+              <label>
+                <b>{t.rps}</b> <span className="muted">{t.rpsHint}</span>
+              </label>
+              <div className="row">
+                <input type="number" min="0.2" max="3" step="0.5" className="year" value={rps} onChange={(e) => setRps(e.target.value)} />
+                <span className="muted">{t.perSecond}</span>
+              </div>
+            </div>
+            <div className="field">
+              <label>
+                <b>{t.stopErrors}</b> <span className="muted">{t.stopErrorsHint}</span>
+              </label>
+              <div className="row">
+                <input type="number" min="0" max="100" className="year" value={stopErrors} onChange={(e) => setStopErrors(e.target.value)} />
+              </div>
+            </div>
+            <h4>{t.sectionDisk}</h4>
+            <div className="field">
+              <label>
+                <b>{t.diskMin}</b> <span className="muted">{t.diskMinHint}</span>
+              </label>
+              <div className="row">
+                <input type="number" min="0" step="1" className="year" value={diskMin} onChange={(e) => setDiskMin(e.target.value)} />
+                <span className="muted">GB</span>
+              </div>
+            </div>
+            <div className="field">
+              <label>
+                <b>{t.diskWarn}</b> <span className="muted">{t.diskWarnHint}</span>
+              </label>
+              <div className="row">
+                <input type="number" min="0" step="1" className="year" value={diskWarn} onChange={(e) => setDiskWarn(e.target.value)} />
+                <span className="muted">GB</span>
+              </div>
+            </div>
+            <h4>{t.sectionNetwork}</h4>
+            <div className="field">
+              <label>
+                <input type="checkbox" checked={netDetect} onChange={(e) => setNetDetect(e.target.checked)} /> <b>{t.netDetect}</b>
+              </label>
+              <span className="muted small">{t.netDetectHint}</span>
+            </div>
+            <h4>{t.sectionDownloads}</h4>
+            <div className="field">
+              <label>
+                <b>{t.speedLimit}</b> <span className="muted">{t.speedLimitHint}</span>
+              </label>
+              <div className="row">
+                <input type="number" min="0" step="0.5" className="year" value={speedLimit} onChange={(e) => setSpeedLimit(e.target.value)} />
+                <span className="muted">MB/s</span>
+              </div>
+            </div>
             <div className="field">
               <label>
                 <b>{t.maxParallel}</b>
@@ -235,6 +317,13 @@ function SettingsModal({ t, onClose, onSaved }) {
             </div>
           </>
         )}
+        {s && (
+          <p className="muted small">
+            {t.settingsFile}: <code>{s.settings_file}</code>
+          </p>
+        )}
+        {s?.settings_error && <p className="err">{s.settings_error}</p>}
+        {saveError && <p className="err">{saveError}</p>}
         <div className="row end">
           <button className="secondary" onClick={onClose}>
             {t.close}
@@ -334,6 +423,12 @@ export default function App() {
   const [cfg, setCfg] = useState({})
   const [showSettings, setShowSettings] = useState(false)
   const [usage, setUsage] = useState(null)
+  const [limits, setLimits] = useState(null)
+  const [view, setView] = useState('add')
+  const [dragId, setDragId] = useState(null)
+  const [overId, setOverId] = useState(null)
+  const [avgSpeed, setAvgSpeed] = useState(0) // velocidade total suavizada (bytes/s)
+  const [lastSpeed, setLastSpeed] = useState(0) // última velocidade conhecida, para estimar novas seleções
   const [text, setText] = useState('')
   const [folders, setFolders] = useState(false)
   const [groups, setGroups] = useState([])
@@ -391,6 +486,13 @@ export default function App() {
     }, 600)
     return () => clearTimeout(timer)
   }, [text, folders])
+
+  useEffect(() => {
+    const tick = () => fetch('/api/limits').then((r) => r.json()).then(setLimits).catch(() => {})
+    tick()
+    const iv = setInterval(tick, 3000)
+    return () => clearInterval(iv)
+  }, [])
 
   useEffect(() => {
     const tick = () => fetch('/api/usage').then((r) => r.json()).then(setUsage).catch(() => {})
@@ -453,10 +555,68 @@ export default function App() {
       tmdbResults: null,
     })
 
+  const openJobs = jobs.filter((j) => ['queued', 'getting_link', 'downloading', 'paused'].includes(j.status))
+  const running = jobs.filter((j) => j.status === 'downloading')
+  const waiting = jobs.filter((j) => ['queued', 'getting_link'].includes(j.status)).length
+  const pausedCount = jobs.filter((j) => j.status === 'paused').length
+  const totalSpeed = running.reduce((n, j) => n + (j.speed || 0), 0)
+
+  // A velocidade medida noutra rede não serve para estimar esta
+  const netId = limits?.speed?.network?.id
+  useEffect(() => {
+    setLastSpeed(0)
+  }, [netId])
+
+  // Velocidade total suavizada (média móvel), para o tempo restante não saltar a cada segundo
+  const rawSpeed = running.reduce((n, j) => n + (j.speed || 0), 0)
+  useEffect(() => {
+    setAvgSpeed((prev) => (rawSpeed <= 0 ? 0 : prev > 0 ? prev * 0.7 + rawSpeed * 0.3 : rawSpeed))
+    if (rawSpeed > 0) setLastSpeed(rawSpeed)
+  }, [jobs])
+
+  // O que falta descarregar (só conta ficheiros de tamanho conhecido)
+  const remainingBytes = openJobs.reduce((n, j) => n + Math.max((j.size || 0) - (j.done || 0), 0), 0)
+  const unknownRemaining = openJobs.filter((j) => !j.size).length
+  const histSpeed = limits?.speed?.avg || 0 // média das últimas sessões desta rede (guardada em ficheiro)
+  const net = limits?.speed?.network
+  const netName = net && net.id !== 'unknown' ? `${net.name || net.id}${net.name && net.id.startsWith('AS') ? ` (${net.id})` : ''}` : ''
+  const networkTooltip = (limits?.speed?.networks || [])
+    .map((n) => `${n.current ? '▶ ' : ''}${n.name || n.id}: ${n.avg ? formatSize(n.avg) + '/s' : '—'} (${n.sessions})`)
+    .join('\n')
+  // Se ainda não há velocidade medida (a arrancar), usa a média histórica como estimativa inicial
+  const fallback = avgSpeed <= 0 && waiting > 0 && histSpeed > 0
+  const etaSpeed = avgSpeed > 0 ? avgSpeed : fallback ? histSpeed : 0
+  const secondsLeft = etaSpeed > 0 ? remainingBytes / etaSpeed : null
+
+  // Arrastar para reordenar: os downloads arrancam de cima para baixo
+  const dropOn = async (targetId) => {
+    const ids = jobs.map((j) => j.id)
+    const from = ids.indexOf(dragId)
+    const to = ids.indexOf(targetId)
+    setDragId(null)
+    setOverId(null)
+    if (from < 0 || to < 0 || from === to) return
+    ids.splice(to, 0, ids.splice(from, 1)[0])
+    setJobs(ids.map((id) => jobs.find((j) => j.id === id))) // mostra já a nova ordem, sem esperar pelo servidor
+    await post('/api/reorder', { ids })
+  }
+
+  // Posição de cada download que ainda espera (o que está a descarregar não conta)
+  const queuePos = {}
+  jobs.filter((j) => j.status === 'queued').forEach((j, n) => (queuePos[j.id] = n + 1))
+
   const totalFiles = groups.reduce((n, g) => n + g.files.length, 0)
   const selectedFiles = groups.flatMap((g) => g.files.filter((f) => g.sel[f.url]))
   const selectedCount = selectedFiles.length
   const selectedSize = selectedFiles.reduce((n, f) => n + (f.size || 0), 0)
+  // Cabe no disco? (os tamanhos desconhecidos não entram na conta)
+  const disk = limits?.disk
+  const afterFree = disk ? disk.free - selectedSize : null
+  const diskCheck = !disk || selectedCount === 0 ? null
+    : afterFree < 0 ? 'nofit'
+    : disk.min_free > 0 && afterFree < disk.min_free ? 'belowmin'
+    : disk.warn_free > 0 && afterFree < disk.warn_free ? 'near'
+    : null
   const unknownSizes = selectedFiles.filter((f) => !f.size).length  // links sem tamanho conhecido
 
   // a seleção não conta como "opção definida" (não mexe no !)
@@ -472,7 +632,7 @@ export default function App() {
   }
 
   const start = async () => {
-    await post('/api/start', {
+    const started = await post('/api/start', {
       groups: groups
         .map((g) => ({ ...g, files: g.files.filter((f) => g.sel[f.url]) }))
         .filter((g) => g.files.length)
@@ -484,7 +644,10 @@ export default function App() {
         name_mode: nameModeOf(g),
       })),
     })
-    setText('')
+    if (started.ok) {
+      setText('')
+      setView('downloads')
+    }
   }
 
   const loadFiles = async (e) => {
@@ -496,17 +659,14 @@ export default function App() {
   return (
     <main>
       <header>
-        <h1>{t.title}</h1>
+        <div className="brand">
+          <img src="/icon-192.png" alt="" width="44" height="44" onError={(e) => (e.currentTarget.style.display = 'none')} />
+          <div>
+            <h1>{t.title}</h1>
+            <span className="muted small">{t.tagline}</span>
+          </div>
+        </div>
         <div className="lang">
-          <button className="secondary icon" title={t.pauseAll} onClick={() => post('/api/pause_all')}>
-            ⏸
-          </button>
-          <button className="secondary icon" title={t.resumeAll} onClick={() => post('/api/resume_all')}>
-            ▶
-          </button>
-          <button className="secondary icon" title={t.clearFinished} onClick={() => post('/api/clear')}>
-            🧹
-          </button>
           <button className="secondary" onClick={() => setShowHistory(true)}>
             {t.history}
           </button>
@@ -521,9 +681,40 @@ export default function App() {
         </div>
       </header>
 
+      <div className="tabs main-tabs" role="tablist">
+        <button role="tab" aria-selected={view === 'add'} className={view === 'add' ? 'tab active' : 'tab'} onClick={() => setView('add')}>
+          {t.tabAdd}
+        </button>
+        <button role="tab" aria-selected={view === 'downloads'} className={view === 'downloads' ? 'tab active' : 'tab'} onClick={() => setView('downloads')}>
+          {t.tabDownloads}
+          {openJobs.length > 0 && <span className="count">{openJobs.length}</span>}
+        </button>
+      </div>
+
       {showSettings && <SettingsModal t={t} onClose={() => setShowSettings(false)} onSaved={loadConfig} />}
       {showHistory && <HistoryModal t={t} onClose={() => setShowHistory(false)} />}
 
+      {limits?.api?.tripped && (
+        <div className="row warn bad">
+          <span>⛔ {t.apiTripped(limits.api.limit)}</span>
+          <button onClick={() => post('/api/resume_all')}>{t.resumeAll}</button>
+        </div>
+      )}
+      {limits?.disk?.low && (
+        <div className="row warn bad">
+          <span>⛔ {t.diskLow(formatSize(limits.disk.free), formatSize(limits.disk.min_free))}</span>
+        </div>
+      )}
+      {limits?.disk?.near && (
+        <div className="row warn">
+          <span>⚠ {t.diskNear(formatSize(limits.disk.free), formatSize(limits.disk.warn_free))}</span>
+        </div>
+      )}
+      {limits?.settings_error && (
+        <div className="row warn">
+          <span>⚠ {limits.settings_error}</span>
+        </div>
+      )}
       {cfg.has_key === false && (
         <div className="row warn">
           <span>⚠ {t.missingKey}</span>
@@ -531,6 +722,8 @@ export default function App() {
         </div>
       )}
 
+      {view === 'add' && (
+        <>
       <div className="row">
         <span className="muted">
           📁 {t.destination}: <b>{cfg.dest_label}</b>
@@ -579,6 +772,19 @@ export default function App() {
             {selectedCount > 0 && ` (${formatSize(selectedSize)}${unknownSizes ? '+' : ''})`}
           </button>
           {pending > 0 && <span className="muted"> <span className="badge">!</span> {t.pendingCount(pending)}</span>}
+          {selectedCount > 0 && selectedSize > 0 && (lastSpeed > 0 || histSpeed > 0) && (
+            <span className="muted">
+              {' '}
+              ≈ {formatDuration(selectedSize / (lastSpeed || histSpeed))}{' '}
+              {lastSpeed > 0 ? t.atSpeed(formatSize(lastSpeed)) : t.atHistSpeed(formatSize(histSpeed))}
+            </span>
+          )}
+          {diskCheck && (
+            <span className={diskCheck === 'near' ? 'warn-text' : 'err'}>
+              {' '}
+              {diskCheck === 'near' ? '⚠' : '⛔'} {t.diskCheck[diskCheck](formatSize(disk.free), formatSize(selectedSize), formatSize(afterFree))}
+            </span>
+          )}
         </p>
       )}
 
@@ -742,8 +948,44 @@ export default function App() {
           </table>
         </section>
       ))}
+        </>
+      )}
 
-      <h2>{t.downloads}</h2>
+      {view === 'downloads' && (
+        <>
+          <div className="toolbar">
+            <button className="secondary icon" title={t.pauseAll} onClick={() => post('/api/pause_all')}>
+              ⏸
+            </button>
+            <button className="secondary icon" title={t.resumeAll} onClick={() => post('/api/resume_all')}>
+              ▶
+            </button>
+            <button className="secondary icon" title={t.clearFinished} onClick={() => post('/api/clear')}>
+              🧹
+            </button>
+            <span className="muted">{t.summary(running.length, waiting, pausedCount, formatSize(totalSpeed))}</span>
+          </div>
+          {jobs.length > 1 && <p className="muted small">⠿ {t.dragHint}</p>}
+          {netName && (
+            <p className="muted small" title={networkTooltip}>
+              🌐 {netName}
+              {' · '}
+              {histSpeed > 0 ? t.histAvg(formatSize(histSpeed), limits.speed.used) : t.noHistory}
+            </p>
+          )}
+          {openJobs.length > 0 && (
+            <div className="eta">
+              <span>
+                {t.remaining}: <b>{formatSize(remainingBytes)}{unknownRemaining ? '+' : ''}</b>
+              </span>
+              <span>
+                {t.timeLeft}: <b>{secondsLeft != null ? `${fallback ? '~' : ''}${unknownRemaining ? '≥ ' : ''}${formatDuration(secondsLeft)}` : '—'}</b>
+              </span>
+              <span>
+                {t.finishesAt}: <b>{secondsLeft != null ? formatEta(secondsLeft, lang) : '—'}</b>
+              </span>
+            </div>
+          )}
       {usage && (usage.limit > 0 || usage.used > 0) && (
         <div className={usage.exceeded ? 'usage warn' : 'usage'}>
           <span className="muted">
@@ -758,24 +1000,59 @@ export default function App() {
           {usage.exceeded && <span>⚠ {t.quotaReached(usage.resets)}</span>}
         </div>
       )}
+          {jobs.length === 0 && <p className="muted">{t.noDownloads}</p>}
       <table>
         <tbody>
-          {jobs.map((j) => {
+          {jobs.map((j, idx) => {
             const pct = j.size ? Math.round((j.done / j.size) * 100) : 0
+            const above = dragId && jobs.findIndex((x) => x.id === dragId) > idx
+            const cls = [
+              dragId === j.id ? 'dragging' : '',
+              overId === j.id && dragId && dragId !== j.id ? (above ? 'drop-above' : 'drop-below') : '',
+            ].join(' ')
             return (
-              <tr key={j.id}>
-                <td>
-                  {j.filename || j.url}
-                  <div className="bar">
-                    <i style={{ width: `${pct}%` }} />
-                  </div>
+              <tr
+                key={j.id}
+                className={cls}
+                draggable
+                onDragStart={(e) => {
+                  setDragId(j.id)
+                  e.dataTransfer.effectAllowed = 'move'
+                  e.dataTransfer.setData('text/plain', j.id) // o Firefox só arrasta se houver dados
+                }}
+                onDragOver={(e) => {
+                  e.preventDefault()
+                  if (overId !== j.id) setOverId(j.id)
+                }}
+                onDrop={(e) => {
+                  e.preventDefault()
+                  dropOn(j.id)
+                }}
+                onDragEnd={() => {
+                  setDragId(null)
+                  setOverId(null)
+                }}
+              >
+                <td className="drag muted nowrap" title={t.dragHint}>
+                  ⠿ {idx + 1}
                 </td>
-                <td className="muted">
-                  {j.status === 'paused' && j.paused_by === 'quota' ? t.status.paused_quota : (t.status[j.status] ?? j.status)}
+                <td>
+                  {j.status === 'done' && <span className="ok" title={t.status.done}>✓ </span>}
+                  {j.filename || j.url}
+                  {j.status !== 'done' && (
+                    <div className={`bar ${j.status === 'error' ? 'bar-error' : j.status === 'paused' ? 'bar-paused' : ''}`}>
+                      <i style={{ width: `${pct}%` }} />
+                    </div>
+                  )}
+                </td>
+                <td className={j.status === 'done' ? 'ok' : 'muted'}>
+                  {j.status === 'paused' && ['quota', 'disk', 'api'].includes(j.paused_by) ? t.status[`paused_${j.paused_by}`] : (t.status[j.status] ?? j.status)}
+                  {queuePos[j.id] && <span> · {t.queuePos(queuePos[j.id])}</span>}
                   {j.error && <span className="err"> {j.error}</span>}
                   <br />
                   {formatSize(j.done)} / {formatSize(j.size)}
                   {j.status === 'downloading' && ` · ${(j.speed / 1048576).toFixed(1)} MB/s`}
+                  {j.status === 'downloading' && j.size > j.done && j.speed > 0 && ` · ${t.left} ${formatDuration((j.size - j.done) / j.speed)}`}
                 </td>
                 <td className="nowrap">
                   {['queued', 'getting_link', 'downloading'].includes(j.status) && (
@@ -785,6 +1062,11 @@ export default function App() {
                   )}
                   {j.status === 'paused' && (
                     <button className="secondary icon" title={t.resume} onClick={() => post(`/api/resume/${j.id}`)}>
+                      ▶
+                    </button>
+                  )}
+                  {['error', 'canceled'].includes(j.status) && (
+                    <button className="secondary icon" title={t.retry} onClick={() => post(`/api/retry/${j.id}`)}>
                       ▶
                     </button>
                   )}{' '}
@@ -797,6 +1079,8 @@ export default function App() {
           })}
         </tbody>
       </table>
+        </>
+      )}
 
       <footer className="credit">
         <span className="muted">

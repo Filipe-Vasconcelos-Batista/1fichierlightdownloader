@@ -1,4 +1,9 @@
-# 1fichier Light Downloader
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="branding/logo-dark.png">
+    <img src="branding/logo.png" alt="Light Downloader" width="520">
+  </picture>
+</p>
 
 🇵🇹 [Versão em português](README.pt.md)
 
@@ -21,9 +26,13 @@ A small app that runs in a Docker container and opens a web interface to downloa
 **Downloading**
 - Choose which files to download: a checkbox per file and a filter (`S02`, `E05`, name…)
 - **History**: files already downloaded are marked with ✓ and unchecked by default
-- Parallel downloads with progress, speed, pause/resume and a cancel button
+- Parallel downloads with progress, speed, pause/resume and a cancel button; a retry button after an error
+- A real queue: downloads start from top to bottom, and you can drag rows to change the order
 - Optional global speed limit (MB/s), set in **Settings (⚙)**
+- Remaining size, time left and estimated finish time; the average speed of your recent sessions is remembered **per network** (identified by your connection provider, via ipinfo.io; can be turned off) so a different network never reuses another one's average
 - Optional data limit per day, week, month or year: downloads pause when it is reached and resume on their own when the period renews
+- API protection: requests to 1fichier are rate limited (max 3/s, as their docs require) and everything pauses after N errors in a row, to avoid an account/IP ban
+- Disk space guard: warns when free space on the destination runs low, pauses below a minimum, and checks whether your selection fits before you start
 - Resumes interrupted downloads (`.part` files)
 - Default destination folder, or one chosen inside the app (optional, see [Configuration](#configuration))
 
@@ -89,9 +98,17 @@ About `SELECTABLE_DIR`: it gives the container write access to that folder, so c
 
 In **Settings (⚙)** you can set a limit in GB per day, week (starting Monday), month or year. The app counts the bytes **this app** downloads (it cannot see other traffic on your PC or what 1fichier records on your account), so treat it as a brake, not an official meter. When the limit is reached, all downloads pause and resume on their own when the period renews or if you raise the limit. You can change the period at any time: usage is stored per day, so the count adjusts. By default the day changes at midnight **French time** (the 1fichier API states its dates are in CET/CEST); you can switch to your own time (`TZ` in `.env`). 1fichier's API does not expose when the traffic quota renews, so for a monthly limit you can set the day of the month the period starts on, to match the renewal date shown in your account.
 
+## Settings file
+
+Your API keys and limits live in **`config/settings.yaml`**. It is created on the first run (settings from older versions are migrated automatically), you can edit it by hand (the app reloads it by itself) or change it from **Settings (⚙)**. It contains your API keys, so it is in `.gitignore` and is **never committed**; `config/settings.example.yaml` is the commented template. A value in `settings.yaml` takes priority over the same value in `.env`.
+
+It includes: the API keys, simultaneous downloads and speed limit, requests per second and the error limit (`api`), the data limit (`data_limit`) and the disk space thresholds (`disk`).
+
+If the file has a YAML error, the app keeps using the last valid values and shows a warning.
+
 ## Stored data
 
-An API key entered in the browser, the chosen destination and the download history live in a Docker volume (`fichier-config`). They survive `docker compose down` and updates, but are deleted by `docker compose down -v`.
+The chosen destination, the download history and the data usage count live in a Docker volume (`fichier-config`). They survive `docker compose down` and updates, but are deleted by `docker compose down -v`. `config/settings.yaml` is not affected.
 
 ## Notes
 

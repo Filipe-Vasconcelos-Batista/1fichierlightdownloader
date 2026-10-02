@@ -1,4 +1,9 @@
-# 1fichier Light Downloader
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="branding/logo-dark.png">
+    <img src="branding/logo.png" alt="Light Downloader" width="520">
+  </picture>
+</p>
 
 🇬🇧 [English version](README.md)
 
@@ -21,9 +26,13 @@ Aplicação pequena que corre num container Docker e abre uma interface no brows
 **Descarregar**
 - Escolhe os ficheiros a descarregar: caixas por ficheiro e um filtro (`S02`, `E05`, nome…)
 - **Histórico**: os ficheiros já descarregados aparecem marcados com ✓ e desmarcados por defeito
-- Downloads em paralelo, com progresso, velocidade, pausa/retoma e botão de cancelar
+- Downloads em paralelo, com progresso, velocidade, pausa/retoma e botão de cancelar; botão para repetir depois de um erro
+- Uma fila a sério: os downloads arrancam de cima para baixo e podes arrastar as linhas para mudar a ordem
 - Limite de velocidade global opcional (MB/s), nas **Definições (⚙)**
+- Tamanho restante, tempo que falta e hora prevista de fim; a velocidade média das últimas sessões fica guardada **por rede** (identificada pelo operador da ligação, via ipinfo.io; podes desligar) para que uma rede diferente nunca use a média de outra
 - Limite de dados opcional por dia, semana, mês ou ano: os downloads pausam ao atingi-lo e retomam sozinhos quando o período renova
+- Proteção da API: os pedidos ao 1fichier têm limite por segundo (máx. 3, como a documentação deles exige) e tudo pausa depois de N erros seguidos, para evitar o bloqueio da conta ou do IP
+- Vigia do disco: avisa quando o espaço livre no destino está a acabar, pausa abaixo de um mínimo e verifica se a seleção cabe antes de começares
 - Retoma downloads interrompidos (ficheiros `.part`)
 - Pasta de destino por defeito, ou escolhida na app (opcional, ver [Configuração](#configuração))
 
@@ -89,9 +98,17 @@ Sobre `SELECTABLE_DIR`: dá ao container permissão de escrita nessa pasta, por 
 
 Nas **Definições (⚙)** podes definir um limite em GB por dia, semana (a começar à segunda), mês ou ano. A app conta os bytes que **esta app** descarrega (não vê o resto do tráfego do PC nem o que o 1fichier regista na conta), por isso serve de travão e não de contador oficial. Ao atingir o limite, todos os downloads pausam e retomam sozinhos quando o período renova ou se aumentares o limite. Podes mudar o período quando quiseres: o consumo é guardado por dia, por isso a contagem ajusta-se. Por defeito o dia muda à meia-noite **de França** (a API do 1fichier indica que as datas são em CET/CEST); podes mudar para a tua hora (`TZ` no `.env`). A API do 1fichier não indica quando a quota de tráfego renova, por isso, num limite mensal, podes definir o dia do mês em que o período começa, para coincidir com a data de renovação que a tua conta mostra.
 
+## Ficheiro de definições
+
+As tuas API keys e os limites ficam em **`config/settings.yaml`**. É criado na primeira execução (as definições de versões anteriores são migradas sozinhas), podes editá-lo à mão (a app relê-o sozinha) ou alterá-lo nas **Definições (⚙)**. Contém as tuas API keys, por isso está no `.gitignore` e **nunca vai para o repositório**; o `config/settings.example.yaml` é o modelo comentado. Um valor no `settings.yaml` tem prioridade sobre o mesmo valor no `.env`.
+
+Inclui: as API keys, os downloads em simultâneo e o limite de velocidade, os pedidos por segundo e o limite de erros (`api`), o limite de dados (`data_limit`) e os limites de espaço em disco (`disk`).
+
+Se o ficheiro tiver um erro de YAML, a app continua com os últimos valores válidos e mostra um aviso.
+
 ## Dados guardados
 
-A API key introduzida no browser, o destino escolhido e o histórico de downloads ficam num volume Docker (`fichier-config`). Sobrevivem a `docker compose down` e a actualizações, mas são apagados com `docker compose down -v`.
+O destino escolhido, o histórico de downloads e a contagem de dados ficam num volume Docker (`fichier-config`). Sobrevivem a `docker compose down` e a actualizações, mas são apagados com `docker compose down -v`. O `config/settings.yaml` não é afectado.
 
 ## Notas
 

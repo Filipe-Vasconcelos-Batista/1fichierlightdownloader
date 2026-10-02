@@ -12,9 +12,9 @@ DOWNLOADS = "/downloads"
 CONFIG = "/config/config.json"
 API = "https://api.1fichier.com/v1"
 UA = "Mozilla/5.0 (X11; Linux x86_64) Gecko/20100101 Firefox/130.0"
-ACTIVE = ("na fila", "a obter link", "a descarregar")
+ACTIVE = ("queued", "getting_link", "downloading")
 
-app = Flask(__name__, static_folder="static")
+app = Flask(__name__, static_folder="static", static_url_path="")
 jobs = {}  # id -> dict
 lock = threading.Lock()
 sem = threading.Semaphore(int(os.environ.get("MAX_PARALLEL", "2")))
@@ -46,7 +46,7 @@ def safe_name(n):
 
 def list_folder(link):
     """Devolve [{filename,size,url}] de uma pasta partilhada do 1fichier."""
-    m = re.search(r"1fichier\.com/(?:dir/|\?)([A-Za-z0-9]{10,})", link)
+    m = re.search(r"1fichier\.com/(?:dir/|\?)([A-Za-z0-9]+)", link)
     if not m:
         raise ValueError("Link inválido")
     fid = m.group(1)
@@ -62,7 +62,7 @@ def list_folder(link):
     if "Accès restreint" in html or "professional infrastructure" in html:
         raise RuntimeError("O 1fichier bloqueou este IP (VPN/proxy/servidor?)")
     out = []
-    for url, name in re.findall(r'<a href="(https://1fichier\.com/\?[a-z0-9]{10,})"[^>]*>([^<]+)</a>', html):
+    for url, name in re.findall(r'<a href="(https://1fichier\.com/\?[A-Za-z0-9]+)"[^>]*>([^<]+)</a>', html):
         out.append({"filename": name.strip(), "size": 0, "url": url})
     if not out:
         raise RuntimeError("Não consegui listar ficheiros (pasta vazia, privada ou com password?)")
@@ -120,24 +120,31 @@ def parse_input(text, folders=False):
     return [{"filename": "", "size": 0, "url": u} for u in links]
 
 
-SERIES_RE = re.compile(r"^(.*?)[\s._-]+S(\d{1,2})E\d{1,3}", re.I)
+SERIES_RE = re.compile(r"^(.*?)[\s._-]+S(\d{1,2})E(\d{1,3})", re.I)
+
+
+def parse_episode(filename):
+    """'Título.S02E05...' -> ('Título', 2, 5); sem padrão -> ('', None, None)."""
+    m = SERIES_RE.match(filename or "")
+    if not m:
+        return "", None, None
+    return safe_name(re.sub(r"[._]+", " ", m.group(1)).strip()), int(m.group(2)), int(m.group(3))
 
 
 def target_folder(filename, series=""):
-    """'Título.S02E05...' -> 'Título/Season 02'; 'series' força o nome da série."""
-    m = SERIES_RE.match(filename or "")
-    if not m:
+    """Série/Season NN; 'series' força o nome da série."""
+    title, season, _ = parse_episode(filename)
+    if season is None:
         return safe_name(series) if series else ""
-    name = safe_name(series) if series else safe_name(re.sub(r"[._]+", " ", m.group(1)).strip())
-    return os.path.join(name, f"Season {int(m.group(2)):02d}")
+    return os.path.join(safe_name(series) if series else title, f"Season {season:02d}")
 
 
 def run_job(job):
     with sem:
-        if job["status"] == "cancelado":
+        if job["status"] == "canceled":
             return
         try:
-            job["status"] = "a obter link"
+            job["status"] = "getting_link"
             key = get_key()
             if not key:
                 raise RuntimeError("API key não definida")
@@ -153,7 +160,7 @@ def run_job(job):
             j = r.json()
             if j.get("status") != "OK":
                 raise RuntimeError(j.get("message", "Erro ao obter link"))
-            job["status"] = "a descarregar"
+            job["status"] = "downloading"
             dest = os.path.join(DOWNLOADS, target_folder(job["filename"], job["series"]), safe_name(job["filename"]))
             os.makedirs(os.path.dirname(dest), exist_ok=True)
             part = dest + ".part"
@@ -171,16 +178,16 @@ def run_job(job):
                 t0, base = time.time(), done
                 with open(part, "ab" if done else "wb") as f:
                     for chunk in d.iter_content(1 << 20):
-                        if job["status"] == "cancelado":
+                        if job["status"] == "canceled":
                             return
                         f.write(chunk)
                         done += len(chunk)
                         job["done"] = done
                         job["speed"] = (done - base) / max(time.time() - t0, 0.001)
             os.replace(part, dest)
-            job["status"] = "concluído"
+            job["status"] = "done"
         except Exception as e:
-            job["status"] = "erro"
+            job["status"] = "error"
             job["error"] = str(e)
 
 
@@ -209,6 +216,7 @@ def api_list():
         series = (request.json.get("series") or "").strip()
         for f in files:
             f["folder"] = target_folder(f["filename"], series)
+            f["series"], f["season"], f["episode"] = parse_episode(f["filename"])
         return jsonify(files=files)
     except Exception as e:
         return jsonify(error=str(e)), 400
@@ -220,7 +228,7 @@ def api_start():
     series = (body.get("series") or "").strip()
     for f in body["files"]:
         job = dict(id=uuid.uuid4().hex[:8], url=f["url"], filename=f["filename"], size=f.get("size", 0),
-                   done=0, speed=0, status="na fila", error="", series=series)
+                   done=0, speed=0, status="queued", error="", series=series)
         with lock:
             jobs[job["id"]] = job
         threading.Thread(target=run_job, args=(job,), daemon=True).start()
@@ -235,7 +243,7 @@ def api_jobs():
 @app.post("/api/cancel/<jid>")
 def api_cancel(jid):
     if jid in jobs and jobs[jid]["status"] in ACTIVE:
-        jobs[jid]["status"] = "cancelado"
+        jobs[jid]["status"] = "canceled"
     return jsonify(ok=True)
 
 

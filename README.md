@@ -4,7 +4,9 @@ Aplicação pequena que corre num container Docker e expõe um frontend simples 
 
 ## Funcionalidades
 
-- Cola o link de uma pasta partilhada, lista os ficheiros e descarrega tudo com um clique
+- Cola o link da pasta (`/dir/...`), o JSON (`json=1|2`) ou uma lista de links: os ficheiros aparecem logo, com nome, temporada/episódio e tamanho
+- Organiza em `Série/Season NN/` a partir do nome dos ficheiros
+- Interface em Português e Inglês (botão PT/EN)
 - Downloads em paralelo (por defeito 2), com barra de progresso e velocidade
 - Retoma downloads interrompidos (ficheiros `.part`)
 - Subpasta de destino opcional
@@ -40,7 +42,7 @@ docker compose up -d --build
 
 1. Abre <http://localhost:8080>
 2. Se não definiste `FICHIER_API_KEY` no `.env`, cola a key e clica em **Guardar** (o campo só aparece nesse caso)
-3. Cola o link da pasta e clica em **Listar**
+3. Cola o link da pasta, o JSON ou a lista de links. A lista aparece sozinha
 4. Clica em **Descarregar todos**
 
 Os ficheiros aparecem em `DOWNLOAD_DIR` (ou numa subpasta, se a indicares).
@@ -62,3 +64,11 @@ Os ficheiros aparecem em `DOWNLOAD_DIR` (ou numa subpasta, se a indicares).
 ## Aviso
 
 Projecto não oficial, sem qualquer relação com o 1fichier. Usa-o apenas para descarregar conteúdo a que tens direito de acesso.
+
+## Desenvolvimento
+
+Frontend em React + Vite (`frontend/`), backend em Flask (`app/`). O Docker compila o frontend e o Flask serve-o.
+
+```bash
+cd frontend && npm install && npm run dev   # http://localhost:5173, com proxy de /api para :8080
+```

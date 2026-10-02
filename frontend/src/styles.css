@@ -1,0 +1,113 @@
+:root {
+  --bg: #fff;
+  --fg: #1c1e21;
+  --muted: #6b7280;
+  --border: #d8dbe0;
+  --accent: #2563eb;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14161a;
+    --fg: #e6e8eb;
+    --muted: #9aa3af;
+    --border: #2c3038;
+    --accent: #60a5fa;
+  }
+}
+body {
+  font: 15px system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--fg);
+  margin: 0;
+}
+main {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 16px;
+}
+header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.lang {
+  display: flex;
+  gap: 4px;
+}
+input,
+textarea,
+button,
+.file {
+  font: inherit;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+}
+textarea {
+  width: 100%;
+  box-sizing: border-box;
+}
+button {
+  cursor: pointer;
+  background: var(--accent);
+  color: #fff;
+  border: 0;
+}
+button.secondary,
+.secondary {
+  background: none;
+  color: var(--fg);
+  border: 1px solid var(--border);
+}
+.file {
+  cursor: pointer;
+}
+input[type='checkbox'] {
+  padding: 0;
+}
+.row {
+  display: flex;
+  gap: 8px;
+  margin: 10px 0;
+  align-items: center;
+}
+.row input:not([type]),
+.row input[type='password'] {
+  flex: 1;
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+td,
+th {
+  padding: 6px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+}
+.bar {
+  height: 6px;
+  background: var(--border);
+  border-radius: 3px;
+  min-width: 100px;
+  margin-top: 4px;
+}
+.bar i {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  border-radius: 3px;
+}
+.muted {
+  color: var(--muted);
+  font-size: 13px;
+}
+.nowrap {
+  white-space: nowrap;
+}
+.err {
+  color: #dc2626;
+}

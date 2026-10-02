@@ -1,25 +1,41 @@
 # 1fichier Light Downloader
 
-Aplicação pequena que corre num container Docker e expõe um frontend simples no browser para descarregar **todos os ficheiros de uma pasta partilhada do 1fichier** (`https://1fichier.com/?xxxxxxxx`) para uma pasta à tua escolha no computador. Requer uma conta **Premium** e a respectiva API key.
+🇵🇹 [Versão em português](README.pt.md)
 
-## Funcionalidades
+A small app that runs in a Docker container and opens a web interface to download **many 1fichier files at once** from shared folders, JSON exports or lists of links, and organise them in the layout **Jellyfin** recognises (`Series (Year)/Season 01/...`). It needs a **1fichier Premium** account and its API key.
 
-- Cola o link da pasta (`/dir/...`), o JSON (`json=1|2`) ou uma lista de links: os ficheiros aparecem logo, com nome, temporada/episódio e tamanho
-- Organiza em `Série/Season NN/` a partir do nome dos ficheiros
-- Pesquisa no TMDB para nome e ano; pastas no formato `Série (Ano) [tmdbid-N]/Season NN`, reconhecido pelo Jellyfin
-- Nome dos ficheiros à escolha: original, `Série (Ano) S01E01` ou só `S01E01`
-- Interface em Português e Inglês (botão PT/EN)
-- Downloads em paralelo (por defeito 2), com barra de progresso e velocidade
-- Retoma downloads interrompidos (ficheiros `.part`)
-- Escolhe a pasta de destino dentro da app (botão **Alterar**), com navegação e criação de pastas
-- A API key fica guardada num volume Docker, nunca no código nem no repositório
+## Features
 
-## Requisitos
+**Input**
+- Paste a folder link (`https://1fichier.com/dir/...`), the folder's JSON (`?json=1|2`), the table copied from the browser, or a list of links (one per line)
+- Paste or upload **several at once**: each source gets its own tab
+- Files show up immediately, with name, season/episode and size
 
-- Docker e Docker Compose
-- Conta 1fichier Premium e a API key (1fichier → *Parâmetros* → *API*)
+**Organisation (Jellyfin)**
+- Detects series, season and episode in file names: `S01E01`, `1x05` and `Name - 05 - Title` (the last one assumes season 1)
+- Per group, pick the folder name among the detected names or type another one, and set the year
+- Optional **TMDB** search to fill in name and year, with the option to add `[tmdbid-N]` to the folder name
+- File naming of your choice: original, `Series (Year) S01E01` or just `S01E01`, the same for all groups or per group
+- Result: `Series (Year)/Season NN/file`
 
-## Instalação
+**Downloading**
+- Choose which files to download: a checkbox per file and a filter (`S02`, `E05`, name…)
+- **History**: files already downloaded are marked with ✓ and unchecked by default
+- Parallel downloads with progress, speed and a cancel button
+- Resumes interrupted downloads (`.part` files)
+- Default destination folder, or one chosen inside the app (optional, see [Configuration](#configuration))
+
+**General**
+- Interface in Portuguese and English (PT/EN button)
+- Your API key never goes into the code or the repository
+
+## Requirements
+
+- Docker and Docker Compose
+- 1fichier Premium account and its API key (1fichier → *Parameters* → *API*)
+- Optional: TMDB API key ([themoviedb.org](https://www.themoviedb.org) → *Settings* → *API*)
+
+## Installation
 
 ```bash
 git clone https://github.com/Filipe-Vasconcelos-Batista/1fichierlightdownloader.git
@@ -27,52 +43,72 @@ cd 1fichierlightdownloader
 cp .env.example .env
 ```
 
-Edita o `.env` e define `DOWNLOAD_DIR` com a pasta do teu computador onde queres guardar os ficheiros (não precisa de ser a pasta de Downloads):
+Edit `.env`:
 
 ```env
-DOWNLOAD_DIR=/home/o-teu-user/Videos/1fichier
-FICHIER_API_KEY=a_tua_chave_aqui
+DOWNLOAD_DIR=/home/your-user/Videos/1fichier
+FICHIER_API_KEY=your_key_here
 ```
 
-Arranca:
+Start it:
 
 ```bash
 docker compose up -d --build
 ```
 
-## Utilização
+To update later: `git pull` and `docker compose up -d --build`.
 
-1. Abre <http://localhost:8080>
-2. Se não definiste `FICHIER_API_KEY` no `.env`, cola a key e clica em **Guardar** (o campo só aparece nesse caso)
-3. Cola o link da pasta, o JSON ou a lista de links. A lista aparece sozinha
-4. Clica em **Descarregar todos**
+## Usage
 
-Os ficheiros aparecem em `DOWNLOAD_DIR` (ou numa subpasta, se a indicares).
+1. Open <http://localhost:8080>
+2. If you did not set `FICHIER_API_KEY` in `.env`, paste the key and click **Save** (the field only appears in that case)
+3. Paste the folder link, the JSON or the list of links. The list appears on its own
+4. For each group (tab), check the folder name, the year (you can use **Search TMDB**) and the file name format. An orange **!** marks groups you have not reviewed yet
+5. Tick the files you want and click **Download selected**
 
-## Configuração
+Files end up in the destination, organised as `Series (Year)/Season NN/`.
 
-| Variável | Onde | Descrição |
+## Configuration
+
+All variables go in `.env`.
+
+| Variable | Required | Description |
 |---|---|---|
-| `DOWNLOAD_DIR` | `.env` | Pasta do host (obrigatória). É o destino por defeito dos downloads |
-| `SELECTABLE_DIR` | `.env` | Opcional. Pasta do host (ex.: `/home/o-teu-user` ou `/mnt/media`) dentro da qual podes escolher o destino na app, com o botão **Alterar**. Se ficar vazia, o botão não aparece e é usado sempre o `DOWNLOAD_DIR`. Dá ao container permissão de escrita nesta pasta: escolhe a mais estreita possível |
-| `FICHIER_API_KEY` | `.env` | API key do 1fichier (opcional; alternativa: introduzir no browser) |
-| `TMDB_API_KEY` | `.env` | Opcional: chave (v3 ou token v4) do TMDB, activa a pesquisa de nome/ano das séries |
-| `MAX_PARALLEL` | `docker-compose.yml` (`environment`) | Downloads em simultâneo (defeito: 2) |
+| `DOWNLOAD_DIR` | yes | Folder on your computer where downloads are saved by default |
+| `FICHIER_API_KEY` | no | 1fichier API key. If empty, you enter it in the browser |
+| `TMDB_API_KEY` | no | TMDB key (v3 key or v4 token). Enables the **Search TMDB** button |
+| `SELECTABLE_DIR` | no | Folder on your computer (e.g. `/home/your-user` or `/mnt/media`) inside which you can pick the destination in the app with the **Change** button. If empty, the button is hidden and `DOWNLOAD_DIR` is always used |
+| `MAX_PARALLEL` | no | Simultaneous downloads (default: 2) |
 
-## Notas
+About `SELECTABLE_DIR`: it gives the container write access to that folder, so choose the narrowest one possible. The app can only browse inside it.
 
-- O servidor só escuta em `127.0.0.1:8080`. Não o exponhas à rede sem autenticação: quem aceder pode usar a tua API key.
-- Corre a aplicação a partir da tua ligação doméstica. O 1fichier bloqueia IPs de servidores, VPNs e proxies nas contas Premium.
-- Se mudares as permissões da pasta de destino e os downloads falharem, confirma que o Docker tem acesso de escrita a `DOWNLOAD_DIR`.
+## Stored data
 
-## Aviso
+An API key entered in the browser, the chosen destination and the download history live in a Docker volume (`fichier-config`). They survive `docker compose down` and updates, but are deleted by `docker compose down -v`.
 
-Projecto não oficial, sem qualquer relação com o 1fichier. Usa-o apenas para descarregar conteúdo a que tens direito de acesso.
+## Notes
 
-## Desenvolvimento
+- The server only listens on `127.0.0.1:8080`. Do not expose it to the network without authentication: anyone who can reach it can use your API key.
+- Run the app from your home connection. 1fichier blocks server, VPN and proxy IPs on Premium accounts.
+- The container writes as `root`, so new files may be owned by that user. If that bothers you, fix it with `sudo chown -R $USER: <folder>`.
+- If downloads fail while saving, check that Docker has write access to the destination folder.
+- If two files in the same group end up with the same final name (for example 720p and 1080p versions of the same episode in the `S01E01` format), the second overwrites the first.
 
-Frontend em React + Vite (`frontend/`), backend em Flask (`app/`). O Docker compila o frontend e o Flask serve-o.
+## Development
+
+React + Vite frontend (`frontend/`), Flask backend (`app/`). Docker builds the frontend and Flask serves it.
 
 ```bash
-cd frontend && npm install && npm run dev   # http://localhost:5173, com proxy de /api para :8080
+cd frontend && npm install && npm run dev   # http://localhost:5173, proxies /api to :8080
 ```
+
+The backend runs in the container (`docker compose up -d --build`); in development, Vite forwards `/api` to it.
+
+## License
+
+[PolyForm Noncommercial 1.0.0](LICENSE): free to use, modify and share for non-commercial purposes. Selling it or using it commercially is not allowed.
+
+## Disclaimer
+
+Unofficial project, not affiliated with 1fichier or TMDB. Use it only to download content you have the right to access.
+This product uses the TMDB API but is not endorsed or certified by TMDB.

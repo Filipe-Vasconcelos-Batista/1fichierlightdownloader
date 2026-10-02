@@ -493,6 +493,7 @@ export default function App() {
             >
               {t.tmdbSearch}
             </button>
+            {!cfg.has_tmdb && <span className="muted">⚠ {t.tmdbNoKey}</span>}
             {g.tmdbId && (
               <label className="muted">
                 <input type="checkbox" checked={g.useTmdbId} onChange={(e) => updateGroup(i, { useTmdbId: e.target.checked })} />{' '}
@@ -603,6 +604,13 @@ export default function App() {
           })}
         </tbody>
       </table>
+
+      {cfg.has_tmdb && (
+        <footer className="tmdb-credit">
+          <img src="/tmdb-logo.svg" alt="TMDB" height="14" />
+          <span className="muted">This product uses the TMDB API but is not endorsed or certified by TMDB.</span>
+        </footer>
+      )}
     </main>
   )
 }

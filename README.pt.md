@@ -1,0 +1,114 @@
+# 1fichier Light Downloader
+
+🇬🇧 [English version](README.md)
+
+Aplicação pequena que corre num container Docker e abre uma interface no browser para descarregar **vários ficheiros do 1fichier de uma só vez**, a partir de pastas partilhadas, JSONs ou listas de links, e organizá-los já no formato que o **Jellyfin** reconhece (`Série (Ano)/Season 01/...`). Requer uma conta **1fichier Premium** e a respectiva API key.
+
+## Funcionalidades
+
+**Entrada**
+- Cola um link de pasta (`https://1fichier.com/dir/...`), o JSON da pasta (`?json=1|2`), a tabela copiada do browser ou uma lista de links (um por linha)
+- Podes colar ou carregar **vários de uma vez**: cada origem fica num separador próprio
+- Os ficheiros aparecem logo, com nome, temporada/episódio e tamanho
+
+**Organização (Jellyfin)**
+- Detecta série, temporada e episódio no nome dos ficheiros: `S01E01`, `1x05` e `Nome - 05 - Título` (neste último assume temporada 1)
+- Por grupo, escolhes o nome da pasta entre os nomes detectados ou escreves outro, e podes definir o ano
+- Pesquisa no **TMDB** (opcional) para preencher nome e ano, com a opção de incluir `[tmdbid-N]` no nome da pasta
+- Nome dos ficheiros à escolha: original, `Série (Ano) S01E01` ou só `S01E01`, igual para todos os grupos ou por grupo
+- Resultado: `Série (Ano)/Season NN/ficheiro`
+
+**Descarregar**
+- Escolhe os ficheiros a descarregar: caixas por ficheiro e um filtro (`S02`, `E05`, nome…)
+- **Histórico**: os ficheiros já descarregados aparecem marcados com ✓ e desmarcados por defeito
+- Downloads em paralelo, com progresso, velocidade e botão de cancelar
+- Retoma downloads interrompidos (ficheiros `.part`)
+- Pasta de destino por defeito, ou escolhida na app (opcional, ver [Configuração](#configuração))
+
+**Geral**
+- Interface em Português e Inglês (botão PT/EN)
+- A API key nunca vai para o código nem para o repositório
+
+## Requisitos
+
+- Docker e Docker Compose
+- Conta 1fichier Premium e a API key (1fichier → *Parâmetros* → *API*)
+- Opcional: chave da API do TMDB ([themoviedb.org](https://www.themoviedb.org) → *Definições* → *API*)
+
+## Instalação
+
+```bash
+git clone https://github.com/Filipe-Vasconcelos-Batista/1fichierlightdownloader.git
+cd 1fichierlightdownloader
+cp .env.example .env
+```
+
+Edita o `.env`:
+
+```env
+DOWNLOAD_DIR=/home/o-teu-user/Videos/1fichier
+FICHIER_API_KEY=a_tua_chave_aqui
+```
+
+Arranca:
+
+```bash
+docker compose up -d --build
+```
+
+Para actualizar mais tarde: `git pull` e `docker compose up -d --build`.
+
+## Utilização
+
+1. Abre <http://localhost:8080>
+2. Se não definiste `FICHIER_API_KEY` no `.env`, cola a key e clica em **Guardar** (o campo só aparece nesse caso)
+3. Cola o link da pasta, o JSON ou a lista de links. A lista aparece sozinha
+4. Por cada grupo (separador), confirma o nome da pasta, o ano (podes usar **Pesquisar no TMDB**) e o formato dos nomes dos ficheiros. Um **!** laranja assinala os grupos ainda por rever
+5. Marca os ficheiros que queres e clica em **Descarregar selecionados**
+
+Os ficheiros ficam no destino, organizados em `Série (Ano)/Season NN/`.
+
+## Configuração
+
+Todas as variáveis vão no `.env`.
+
+| Variável | Obrigatória | Descrição |
+|---|---|---|
+| `DOWNLOAD_DIR` | sim | Pasta do teu computador onde os downloads são gravados por defeito |
+| `FICHIER_API_KEY` | não | API key do 1fichier. Se ficar vazia, introduzes no browser |
+| `TMDB_API_KEY` | não | Chave (v3 ou token v4) do TMDB. Activa o botão **Pesquisar no TMDB** |
+| `SELECTABLE_DIR` | não | Pasta do computador (ex.: `/home/o-teu-user` ou `/mnt/media`) dentro da qual podes escolher o destino na app, com o botão **Alterar**. Se ficar vazia, o botão não aparece e é usado sempre o `DOWNLOAD_DIR` |
+| `MAX_PARALLEL` | não | Downloads em simultâneo (defeito: 2) |
+
+Sobre `SELECTABLE_DIR`: dá ao container permissão de escrita nessa pasta, por isso escolhe a mais estreita possível. Na app só consegues navegar dentro dela.
+
+## Dados guardados
+
+A API key introduzida no browser, o destino escolhido e o histórico de downloads ficam num volume Docker (`fichier-config`). Sobrevivem a `docker compose down` e a actualizações, mas são apagados com `docker compose down -v`.
+
+## Notas
+
+- O servidor só escuta em `127.0.0.1:8080`. Não o exponhas à rede sem autenticação: quem aceder pode usar a tua API key.
+- Corre a aplicação a partir da tua ligação doméstica. O 1fichier bloqueia IPs de servidores, VPNs e proxies nas contas Premium.
+- O container grava como `root`, por isso os ficheiros novos podem ficar com esse dono. Se isso te incomodar, corrige com `sudo chown -R $USER: <pasta>`.
+- Se os downloads falharem ao gravar, confirma que o Docker tem acesso de escrita à pasta de destino.
+- Se dois ficheiros do mesmo grupo resultarem no mesmo nome final (por exemplo, versões 720p e 1080p do mesmo episódio no formato `S01E01`), o segundo sobrescreve o primeiro.
+
+## Desenvolvimento
+
+Frontend em React + Vite (`frontend/`), backend em Flask (`app/`). O Docker compila o frontend e o Flask serve-o.
+
+```bash
+cd frontend && npm install && npm run dev   # http://localhost:5173, com proxy de /api para :8080
+```
+
+O backend corre no container (`docker compose up -d --build`); em desenvolvimento, o Vite reencaminha `/api` para ele.
+
+## Licença
+
+[PolyForm Noncommercial 1.0.0](LICENSE): livre para usar, modificar e partilhar para fins não comerciais. Não é permitido vendê-lo nem usá-lo comercialmente.
+
+## Aviso
+
+Projecto não oficial, sem qualquer relação com o 1fichier nem com o TMDB. Usa-o apenas para descarregar conteúdo a que tens direito de acesso.
+Este produto usa a API do TMDB mas não é por ele endossado nem certificado.

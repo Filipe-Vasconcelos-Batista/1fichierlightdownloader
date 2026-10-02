@@ -12,6 +12,7 @@ services:
     environment:
       FICHIER_API_KEY: "${FICHIER_API_KEY:-}"
       TMDB_API_KEY: "${TMDB_API_KEY:-}"
+      MAX_PARALLEL: "${MAX_PARALLEL:-2}"
       HOST_DOWNLOAD_DIR: "${DOWNLOAD_DIR}"
       HOST_SELECTABLE_DIR: "${SELECTABLE_DIR:-}"
     restart: unless-stopped

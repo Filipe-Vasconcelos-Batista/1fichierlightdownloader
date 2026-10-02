@@ -9,6 +9,7 @@ services:
       - fichier-config:/config
     environment:
       FICHIER_API_KEY: "${FICHIER_API_KEY:-}"
+      TMDB_API_KEY: "${TMDB_API_KEY:-}"
     restart: unless-stopped
 
 volumes:

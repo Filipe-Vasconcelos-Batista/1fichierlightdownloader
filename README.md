@@ -6,6 +6,8 @@ Aplicação pequena que corre num container Docker e expõe um frontend simples 
 
 - Cola o link da pasta (`/dir/...`), o JSON (`json=1|2`) ou uma lista de links: os ficheiros aparecem logo, com nome, temporada/episódio e tamanho
 - Organiza em `Série/Season NN/` a partir do nome dos ficheiros
+- Pesquisa no TMDB para nome e ano; pastas no formato `Série (Ano) [tmdbid-N]/Season NN`, reconhecido pelo Jellyfin
+- Nome dos ficheiros à escolha: original, `Série (Ano) S01E01` ou só `S01E01`
 - Interface em Português e Inglês (botão PT/EN)
 - Downloads em paralelo (por defeito 2), com barra de progresso e velocidade
 - Retoma downloads interrompidos (ficheiros `.part`)
@@ -53,6 +55,7 @@ Os ficheiros aparecem em `DOWNLOAD_DIR` (ou numa subpasta, se a indicares).
 |---|---|---|
 | `DOWNLOAD_DIR` | `.env` | Pasta do host onde os downloads são gravados (obrigatória) |
 | `FICHIER_API_KEY` | `.env` | API key do 1fichier (opcional; alternativa: introduzir no browser) |
+| `TMDB_API_KEY` | `.env` | Opcional: chave (v3 ou token v4) do TMDB, activa a pesquisa de nome/ano das séries |
 | `MAX_PARALLEL` | `docker-compose.yml` (`environment`) | Downloads em simultâneo (defeito: 2) |
 
 ## Notas

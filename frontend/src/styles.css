@@ -111,3 +111,46 @@ th {
 .err {
   color: #dc2626;
 }
+.group {
+  margin: 20px 0;
+}
+.group h3 {
+  margin: 0 0 8px;
+}
+.names {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+.names label {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+.names input:not([type]) {
+  min-width: 260px;
+}
+.names input[type='radio'] {
+  padding: 0;
+}
+.year {
+  width: 70px;
+}
+select {
+  font: inherit;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+}
+.tmdb {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 10px;
+}
+.tmdb li {
+  margin: 4px 0;
+}

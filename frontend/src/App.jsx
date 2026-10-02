@@ -292,7 +292,10 @@ export default function App() {
     })
 
   const totalFiles = groups.reduce((n, g) => n + g.files.length, 0)
-  const selectedCount = groups.reduce((n, g) => n + g.files.filter((f) => g.sel[f.url]).length, 0)
+  const selectedFiles = groups.flatMap((g) => g.files.filter((f) => g.sel[f.url]))
+  const selectedCount = selectedFiles.length
+  const selectedSize = selectedFiles.reduce((n, f) => n + (f.size || 0), 0)
+  const unknownSizes = selectedFiles.filter((f) => !f.size).length  // links sem tamanho conhecido
 
   // a seleção não conta como "opção definida" (não mexe no !)
   const patchGroup = (i, patch) => setGroups((gs) => gs.map((g, k) => (k === i ? { ...g, ...patch } : g)))
@@ -333,6 +336,15 @@ export default function App() {
       <header>
         <h1>{t.title}</h1>
         <div className="lang">
+          <button className="secondary icon" title={t.pauseAll} onClick={() => post('/api/pause_all')}>
+            ⏸
+          </button>
+          <button className="secondary icon" title={t.resumeAll} onClick={() => post('/api/resume_all')}>
+            ▶
+          </button>
+          <button className="secondary icon" title={t.clearFinished} onClick={() => post('/api/clear')}>
+            🧹
+          </button>
           <button className="secondary" onClick={() => setShowHistory(true)}>
             {t.history}
           </button>
@@ -403,6 +415,7 @@ export default function App() {
           <b>{t.selectedOf(selectedCount, totalFiles)}</b>{' '}
           <button onClick={start} disabled={selectedCount === 0}>
             {t.downloadSelected}
+            {selectedCount > 0 && ` (${formatSize(selectedSize)}${unknownSizes ? '+' : ''})`}
           </button>
           {pending > 0 && <span className="muted"> <span className="badge">!</span> {t.pendingCount(pending)}</span>}
         </p>
@@ -569,12 +582,7 @@ export default function App() {
         </section>
       ))}
 
-      <h2>
-        {t.downloads}{' '}
-        <button className="secondary" onClick={() => post('/api/clear')}>
-          {t.clearFinished}
-        </button>
-      </h2>
+      <h2>{t.downloads}</h2>
       <table>
         <tbody>
           {jobs.map((j) => {
@@ -594,8 +602,18 @@ export default function App() {
                   {formatSize(j.done)} / {formatSize(j.size)}
                   {j.status === 'downloading' && ` · ${(j.speed / 1048576).toFixed(1)} MB/s`}
                 </td>
-                <td>
-                  <button className="secondary" title={t.cancel} onClick={() => post(`/api/cancel/${j.id}`)}>
+                <td className="nowrap">
+                  {['queued', 'getting_link', 'downloading'].includes(j.status) && (
+                    <button className="secondary icon" title={t.pause} onClick={() => post(`/api/pause/${j.id}`)}>
+                      ⏸
+                    </button>
+                  )}
+                  {j.status === 'paused' && (
+                    <button className="secondary icon" title={t.resume} onClick={() => post(`/api/resume/${j.id}`)}>
+                      ▶
+                    </button>
+                  )}{' '}
+                  <button className="secondary icon" title={t.cancel} onClick={() => post(`/api/cancel/${j.id}`)}>
                     ✕
                   </button>
                 </td>
@@ -605,12 +623,21 @@ export default function App() {
         </tbody>
       </table>
 
-      {cfg.has_tmdb && (
-        <footer className="tmdb-credit">
-          <img src="/tmdb-logo.svg" alt="TMDB" height="14" />
-          <span className="muted">This product uses the TMDB API but is not endorsed or certified by TMDB.</span>
-        </footer>
-      )}
+      <footer className="credit">
+        <span className="muted">
+          © {new Date().getFullYear()} Filipe Vasconcelos Batista ·{' '}
+          <a href="mailto:filipevbatista1@gmail.com">filipevbatista1@gmail.com</a> ·{' '}
+          <a href="https://github.com/Filipe-Vasconcelos-Batista" target="_blank" rel="noreferrer">
+            GitHub
+          </a>
+        </span>
+        {cfg.has_tmdb && (
+          <div className="tmdb-credit">
+            <img src="/tmdb-logo.svg" alt="TMDB" height="14" />
+            <span className="muted">This product uses the TMDB API but is not endorsed or certified by TMDB.</span>
+          </div>
+        )}
+      </footer>
     </main>
   )
 }

@@ -108,6 +108,10 @@ O backend corre no container (`docker compose up -d --build`); em desenvolviment
 
 [PolyForm Noncommercial 1.0.0](LICENSE): livre para usar, modificar e partilhar para fins não comerciais. Não é permitido vendê-lo nem usá-lo comercialmente.
 
+## Autor
+
+Filipe Vasconcelos Batista · [filipevbatista1@gmail.com](mailto:filipevbatista1@gmail.com) · [GitHub](https://github.com/Filipe-Vasconcelos-Batista)
+
 ## Aviso
 
 Projecto não oficial, sem qualquer relação com o 1fichier nem com o TMDB. Usa-o apenas para descarregar conteúdo a que tens direito de acesso.

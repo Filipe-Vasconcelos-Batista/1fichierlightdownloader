@@ -53,6 +53,10 @@ export const messages = {
     downloads: 'Downloads',
     clearFinished: 'Limpar terminados',
     cancel: 'Cancelar',
+    pause: 'Pausar',
+    resume: 'Retomar',
+    pauseAll: 'Pausar todos',
+    resumeAll: 'Retomar todos',
     status: {
       queued: 'na fila',
       getting_link: 'a obter link',
@@ -60,6 +64,7 @@ export const messages = {
       done: 'concluído',
       error: 'erro',
       canceled: 'cancelado',
+      paused: 'em pausa',
     },
   },
   en: {
@@ -116,6 +121,10 @@ export const messages = {
     downloads: 'Downloads',
     clearFinished: 'Clear finished',
     cancel: 'Cancel',
+    pause: 'Pause',
+    resume: 'Resume',
+    pauseAll: 'Pause all',
+    resumeAll: 'Resume all',
     status: {
       queued: 'queued',
       getting_link: 'getting link',
@@ -123,6 +132,7 @@ export const messages = {
       done: 'done',
       error: 'error',
       canceled: 'canceled',
+      paused: 'paused',
     },
   },
 }

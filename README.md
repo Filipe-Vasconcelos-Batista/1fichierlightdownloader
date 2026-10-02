@@ -108,6 +108,10 @@ The backend runs in the container (`docker compose up -d --build`); in developme
 
 [PolyForm Noncommercial 1.0.0](LICENSE): free to use, modify and share for non-commercial purposes. Selling it or using it commercially is not allowed.
 
+## Author
+
+Filipe Vasconcelos Batista · [filipevbatista1@gmail.com](mailto:filipevbatista1@gmail.com) · [GitHub](https://github.com/Filipe-Vasconcelos-Batista)
+
 ## Disclaimer
 
 Unofficial project, not affiliated with 1fichier or TMDB. Use it only to download content you have the right to access.

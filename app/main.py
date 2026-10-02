@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Filipe Vasconcelos Batista <filipevbatista1@gmail.com>
+# Licensed under the PolyForm Noncommercial License 1.0.0 (see LICENSE).
 import json
 import os
 import re
@@ -14,7 +16,8 @@ CONFIG = "/config/config.json"
 HISTORY = "/config/history.json"
 API = "https://api.1fichier.com/v1"
 UA = "Mozilla/5.0 (X11; Linux x86_64) Gecko/20100101 Firefox/130.0"
-ACTIVE = ("queued", "getting_link", "downloading")
+ACTIVE = ("queued", "getting_link", "downloading", "paused")
+RUNNING = ("queued", "getting_link", "downloading")
 
 app = Flask(__name__, static_folder="static", static_url_path="")
 jobs = {}  # id -> dict
@@ -279,12 +282,20 @@ def tmdb_get(path, **params):
     return r.json()
 
 
-def run_job(job):
+def advance(job, gen, status):
+    """Muda o estado só se esta execução (gen) continua a ser a atual e o job não foi cancelado."""
+    with lock:
+        if job["gen"] != gen or job["status"] == "canceled":
+            return False
+        job["status"] = status
+        return True
+
+
+def run_job(job, gen):
     with sem:
-        if job["status"] == "canceled":
+        if not advance(job, gen, "getting_link"):
             return
         try:
-            job["status"] = "getting_link"
             key = get_key()
             if not key:
                 raise RuntimeError("API key não definida")
@@ -300,7 +311,8 @@ def run_job(job):
             j = r.json()
             if j.get("status") != "OK":
                 raise RuntimeError(j.get("message", "Erro ao obter link"))
-            job["status"] = "downloading"
+            if not advance(job, gen, "downloading"):
+                return
             dest = os.path.join(job["dest"], target_folder(job["filename"], job["series"], job["year"], job["tmdb_id"]),
                                 target_filename(job["filename"], job["series"], job["year"], job["name_mode"]))
             os.makedirs(os.path.dirname(dest), exist_ok=True)
@@ -319,8 +331,8 @@ def run_job(job):
                 t0, base = time.time(), done
                 with open(part, "ab" if done else "wb") as f:
                     for chunk in d.iter_content(1 << 20):
-                        if job["status"] == "canceled":
-                            return
+                        if job["gen"] != gen or job["status"] == "canceled":
+                            return  # pausado ou cancelado: o .part fica para retomar
                         f.write(chunk)
                         done += len(chunk)
                         job["done"] = done
@@ -461,11 +473,11 @@ def api_start():
         name_mode = g.get("name_mode") if g.get("name_mode") in NAME_MODES else "original"
         for f in g["files"]:
             job = dict(id=uuid.uuid4().hex[:8], url=f["url"], filename=f["filename"], size=f.get("size", 0),
-                       done=0, speed=0, status="queued", error="", series=series, year=year,
+                       done=0, speed=0, gen=0, status="queued", error="", series=series, year=year,
                        tmdb_id=tmdb_id, name_mode=name_mode, dest=dest)
             with lock:
                 jobs[job["id"]] = job
-            threading.Thread(target=run_job, args=(job,), daemon=True).start()
+            threading.Thread(target=run_job, args=(job, job["gen"]), daemon=True).start()
     return jsonify(ok=True)
 
 
@@ -474,10 +486,58 @@ def api_jobs():
     return jsonify(list(jobs.values()))
 
 
+def pause_job(job):
+    with lock:
+        if job["status"] in RUNNING:
+            job["status"] = "paused"
+            job["gen"] += 1  # a thread atual para no próximo bloco
+            job["speed"] = 0
+
+
+def resume_job(job):
+    with lock:
+        if job["status"] != "paused":
+            return
+        job["status"], job["error"] = "queued", ""
+        job["gen"] += 1
+        gen = job["gen"]
+    threading.Thread(target=run_job, args=(job, gen), daemon=True).start()
+
+
 @app.post("/api/cancel/<jid>")
 def api_cancel(jid):
-    if jid in jobs and jobs[jid]["status"] in ACTIVE:
-        jobs[jid]["status"] = "canceled"
+    with lock:
+        if jid in jobs and jobs[jid]["status"] in ACTIVE:
+            jobs[jid]["status"] = "canceled"
+            jobs[jid]["gen"] += 1
+    return jsonify(ok=True)
+
+
+@app.post("/api/pause/<jid>")
+def api_pause(jid):
+    if jid in jobs:
+        pause_job(jobs[jid])
+    return jsonify(ok=True)
+
+
+@app.post("/api/resume/<jid>")
+def api_resume(jid):
+    if jid in jobs:
+        resume_job(jobs[jid])
+    return jsonify(ok=True)
+
+
+@app.post("/api/pause_all")
+def api_pause_all():
+    for j in list(jobs.values()):
+        pause_job(j)
+    return jsonify(ok=True)
+
+
+@app.post("/api/resume_all")
+def api_resume_all():
+    for j in list(jobs.values()):
+        resume_job(j)
     return jsonify(ok=True)
 
 

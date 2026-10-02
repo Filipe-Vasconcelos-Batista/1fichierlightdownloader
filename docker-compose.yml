@@ -1,0 +1,15 @@
+services:
+  fichier:
+    build: .
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      # Pasta do teu computador onde os ficheiros são gravados (definir em .env)
+      - "${DOWNLOAD_DIR:?define DOWNLOAD_DIR no ficheiro .env}:/downloads"
+      - fichier-config:/config
+    environment:
+      FICHIER_API_KEY: "${FICHIER_API_KEY:-}"
+    restart: unless-stopped
+
+volumes:
+  fichier-config:

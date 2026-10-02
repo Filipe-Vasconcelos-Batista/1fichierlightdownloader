@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="pt"><head><meta charset="utf-8"><title>1fichier Downloader</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+:root{--bg:#fff;--fg:#1c1e21;--mut:#6b7280;--bd:#d8dbe0;--ac:#2563eb}
+@media(prefers-color-scheme:dark){:root{--bg:#14161a;--fg:#e6e8eb;--mut:#9aa3af;--bd:#2c3038;--ac:#60a5fa}}
+body{font:15px system-ui;background:var(--bg);color:var(--fg);max-width:900px;margin:0 auto;padding:16px}
+input,button{font:inherit;padding:8px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--bg);color:var(--fg)}
+button{cursor:pointer;background:var(--ac);color:#fff;border:0}button.s{background:none;color:var(--fg);border:1px solid var(--bd)}
+.row{display:flex;gap:8px;margin:10px 0}.row input{flex:1}
+table{width:100%;border-collapse:collapse}td,th{padding:6px;border-bottom:1px solid var(--bd);text-align:left}
+.bar{height:6px;background:var(--bd);border-radius:3px;min-width:100px}.bar i{display:block;height:100%;background:var(--ac);border-radius:3px}
+.m{color:var(--mut);font-size:13px}.err{color:#dc2626}
+</style></head><body>
+<h2>1fichier Downloader</h2>
+<div class="row" id="keyrow"><input id="key" type="password" placeholder="API key do 1fichier (Parâmetros → API)"><button onclick="saveKey()">Guardar</button></div>
+<textarea id="link" rows="6" style="width:100%;box-sizing:border-box;font:inherit;padding:8px;border:1px solid var(--bd);border-radius:6px;background:var(--bg);color:var(--fg)" placeholder="Cola aqui os links do 1fichier, um por linha&#10;(ou carrega um ficheiro JSON abaixo)"></textarea>
+<div class="row"><input id="jsonf" type="file" accept=".json,.txt" onchange="loadFile(this)"><label class="m"><input id="folders" type="checkbox"> os links são pastas</label><button onclick="list()">Listar</button></div>
+<div class="row"><input id="sub" placeholder="Nome da série (opcional — senão é detectado do nome de cada ficheiro)"></div>
+<div id="files"></div>
+<h3>Downloads <button class="s" onclick="post('/api/clear')">Limpar terminados</button></h3>
+<table id="jobs"></table>
+<script>
+const $=s=>document.getElementById(s),post=(u,b)=>fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b||{})});
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const sz=n=>n?(n>=1073741824?(n/1073741824).toFixed(2)+' GB':(n/1048576).toFixed(1)+' MB'):'?';
+let files=[];
+async function init(){const c=await (await fetch('/api/config')).json();if(c.from_env){$('keyrow').style.display='none'}else if(c.has_key)$('key').placeholder='API key guardada ✔ (escreve para substituir)'}
+async function saveKey(){if($('key').value){await post('/api/config',{api_key:$('key').value});$('key').value='';init()}}
+async function loadFile(i){if(i.files[0])$('link').value=await i.files[0].text()}
+async function list(){
+  const j=await (await post('/api/list',{text:$('link').value,folders:$('folders').checked,series:$('sub').value})).json();
+  if(j.error){$('files').innerHTML='<p class=err>'+esc(j.error)+'</p>';return}
+  files=j.files;
+  $('files').innerHTML='<p><b>'+files.length+' ficheiros</b> <button onclick="start()">Descarregar todos</button></p><table>'+
+    files.map(f=>`<tr><td>${esc(f.filename||f.url)}</td><td class=m>${esc(f.folder||'')}</td><td class=m>${sz(f.size)}</td></tr>`).join('')+'</table>';
+}
+async function start(){await post('/api/start',{files,series:$('sub').value});$('files').innerHTML=''}
+async function tick(){
+  const js=await (await fetch('/api/jobs')).json();
+  $('jobs').innerHTML=js.map(j=>{const p=j.size?Math.round(j.done/j.size*100):0;
+    return `<tr><td>${esc(j.filename||j.url)}<div class=bar><i style="width:${p}%"></i></div></td>
+    <td class=m>${j.status}${j.error?` <span class=err>${esc(j.error)}</span>`:''}<br>${sz(j.done)} / ${sz(j.size)}${j.status=='a descarregar'?' · '+(j.speed/1048576).toFixed(1)+' MB/s':''}</td>
+    <td><button class=s onclick="post('/api/cancel/${j.id}')">✕</button></td></tr>`}).join('');
+}
+init();setInterval(tick,1000);
+</script></body></html>
